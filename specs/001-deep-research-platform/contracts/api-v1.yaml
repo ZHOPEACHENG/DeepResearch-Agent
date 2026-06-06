@@ -1,0 +1,993 @@
+openapi: "3.0.3"
+info:
+  title: Deep Research Platform API
+  description: Academic Deep Research Platform REST API v1
+  version: "1.0.0"
+  contact:
+    name: Platform Team
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development server
+
+tags:
+  - name: Auth
+    description: 用户认证
+  - name: Users
+    description: 用户资料管理
+  - name: Tasks
+    description: 研究任务管理
+  - name: Research
+    description: 研究流程
+  - name: Reports
+    description: 报告查看与导出
+  - name: Knowledge
+    description: 个人知识库
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ═══════════════════════════════════════════════════════════════════
+  # Auth
+  # ═══════════════════════════════════════════════════════════════════
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: 用户注册
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 50
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                display_name:
+                  type: string
+                  maxLength: 100
+                institution:
+                  type: string
+                  maxLength: 200
+      responses:
+        "201":
+          description: 注册成功，返回 access_token 和 refresh_token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "409":
+          description: 用户名或邮箱已存在
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: 用户登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "401":
+          description: 邮箱或密码错误
+        "423":
+          description: 账号已锁定
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新 Token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        "200":
+          description: Token 刷新成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "401":
+          description: Refresh Token 无效或过期
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: 登出
+      responses:
+        "204":
+          description: 登出成功
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Users
+  # ═══════════════════════════════════════════════════════════════════
+  /users/me:
+    get:
+      tags: [Users]
+      summary: 获取当前用户信息
+      responses:
+        "200":
+          description: 用户信息
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+    patch:
+      tags: [Users]
+      summary: 更新个人资料
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                  maxLength: 100
+                institution:
+                  type: string
+                  maxLength: 200
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+
+  /users/me/password:
+    put:
+      tags: [Users]
+      summary: 修改密码
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 8
+      responses:
+        "200":
+          description: 密码修改成功
+        "401":
+          description: 旧密码错误
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Tasks
+  # ═══════════════════════════════════════════════════════════════════
+  /tasks:
+    get:
+      tags: [Tasks]
+      summary: 获取任务列表
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, paused, completed, failed]
+        - name: sort_by
+          in: query
+          schema:
+            type: string
+            enum: [updated_at, created_at]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        "200":
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
+    post:
+      tags: [Tasks]
+      summary: 创建研究任务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [topic]
+              properties:
+                topic:
+                  type: string
+                  minLength: 10
+                  description: 研究主题描述
+                config:
+                  $ref: "#/components/schemas/TaskConfig"
+      responses:
+        "201":
+          description: 任务创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+
+  /tasks/{task_id}:
+    get:
+      tags: [Tasks]
+      summary: 获取任务详情
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 任务详情（含各阶段产物引用）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "404":
+          description: 任务不存在
+        "403":
+          description: 无权访问该任务
+
+  /tasks/{task_id}/start:
+    post:
+      tags: [Tasks]
+      summary: 启动研究任务
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 任务已启动
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetail"
+        "409":
+          description: 任务状态不允许启动（如已在运行）
+
+  /tasks/{task_id}/pause:
+    post:
+      tags: [Tasks]
+      summary: 暂停研究任务
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 任务已暂停
+        "409":
+          description: 任务状态不允许暂停
+
+  /tasks/{task_id}/resume:
+    post:
+      tags: [Tasks]
+      summary: 恢复研究任务
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 任务已恢复
+        "409":
+          description: 任务状态不允许恢复
+
+  /tasks/{task_id}:
+    delete:
+      tags: [Tasks]
+      summary: 删除研究任务
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: 删除成功（级联删除所有关联数据）
+        "404":
+          description: 任务不存在
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Research
+  # ═══════════════════════════════════════════════════════════════════
+  /research/{task_id}/stream:
+    get:
+      tags: [Research]
+      summary: SSE 实时研究进度流
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: SSE 事件流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /research/{task_id}/stage-outputs:
+    get:
+      tags: [Research]
+      summary: 获取任务各阶段产出
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: stage
+          in: query
+          schema:
+            type: string
+            enum: [plan, retrieval, summary, gaps, report]
+      responses:
+        "200":
+          description: 阶段产出详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StageOutputs"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Reports
+  # ═══════════════════════════════════════════════════════════════════
+  /reports/{task_id}:
+    get:
+      tags: [Reports]
+      summary: 获取研究报告
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 报告完整内容
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportDetail"
+        "404":
+          description: 报告未生成
+
+  /reports/{task_id}/citations/{citation_index}:
+    get:
+      tags: [Reports]
+      summary: 获取引用详情
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: citation_index
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: 引用详情（含来源元数据 + 原文摘录）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CitationDetail"
+        "404":
+          description: 引用不存在
+
+  /reports/{task_id}/export:
+    get:
+      tags: [Reports]
+      summary: 导出研究报告
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [markdown, pdf]
+      responses:
+        "200":
+          description: 导出文件下载
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            text/markdown:
+              schema:
+                type: string
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: 报告未生成
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Knowledge Base
+  # ═══════════════════════════════════════════════════════════════════
+  /knowledge/documents:
+    get:
+      tags: [Knowledge]
+      summary: 获取知识库文档列表
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: 文档列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentListResponse"
+    post:
+      tags: [Knowledge]
+      summary: 上传文档
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF/DOCX/TXT/MD, max 50MB
+      responses:
+        "201":
+          description: 文档上传成功，开始处理
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentDetail"
+        "400":
+          description: 不支持的文件格式
+        "413":
+          description: 文件过大
+
+  /knowledge/documents/{document_id}:
+    get:
+      tags: [Knowledge]
+      summary: 获取文档详情及处理状态
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: 文档详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentDetail"
+    delete:
+      tags: [Knowledge]
+      summary: 删除文档
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: 删除成功（移除文件和索引）
+
+  /knowledge/search:
+    get:
+      tags: [Knowledge]
+      summary: 知识库关键词搜索
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: 搜索结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+
+  /knowledge/ask:
+    post:
+      tags: [Knowledge]
+      summary: 知识库问答
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  description: 自然语言问题
+      responses:
+        "200":
+          description: 答案及来源引用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AskResponse"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # SSE Event Stream Format (研究进度)
+  # ═══════════════════════════════════════════════════════════════════
+  /research/{task_id}/stream:
+    get:
+      tags: [Research]
+      summary: SSE 事件流
+      description: |
+        事件类型:
+        - phase_change: 阶段切换
+        - progress: 进度更新
+        - stage_complete: 阶段完成（含产出物引用）
+        - error: 阶段错误
+        - complete: 研究完成
+      responses:
+        "200":
+          description: SSE 流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: phase_change
+                data: {"phase": "retrieving", "message": "正在检索资料..."}
+
+                event: progress
+                data: {"phase": "retrieving", "found": 25, "dedup": 3, "remaining": 2}
+
+                event: stage_complete
+                data: {"phase": "retrieving", "output_ref": "/research/{task_id}/stage-outputs?stage=retrieval", "round": 1}
+
+                event: complete
+                data: {"task_id": "...", "report_ref": "/reports/{task_id}"}
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        detail:
+          type: string
+          description: 错误描述
+
+    TokenPair:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          enum: [bearer]
+        expires_in:
+          type: integer
+          description: Access Token 有效期（秒）
+
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        email:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        institution:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    TaskConfig:
+      type: object
+      properties:
+        max_gap_rounds:
+          type: integer
+          default: 3
+          maximum: 3
+        sources:
+          type: array
+          items:
+            type: string
+            enum: [web, arxiv, semantic_scholar, knowledge_base]
+          default: [web, arxiv, semantic_scholar]
+
+    TaskSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        topic:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, paused, completed, failed]
+        current_phase:
+          type: string
+          nullable: true
+        progress_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TaskListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskSummary"
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+
+    TaskDetail:
+      type: object
+      allOf:
+        - $ref: "#/components/schemas/TaskSummary"
+      properties:
+        elapsed_seconds:
+          type: integer
+        error_message:
+          type: string
+          nullable: true
+        stage_outputs:
+          type: object
+          properties:
+            plan_ref:
+              type: string
+              nullable: true
+            retrieval_summary:
+              type: object
+              nullable: true
+              properties:
+                total_rounds:
+                  type: integer
+                total_results:
+                  type: integer
+            knowledge_summary_refs:
+              type: array
+              items:
+                type: string
+              nullable: true
+            gaps:
+              type: array
+              items:
+                $ref: "#/components/schemas/GapSummary"
+              nullable: true
+            report_ref:
+              type: string
+              nullable: true
+
+    GapSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        retrieval_status:
+          type: string
+          enum: [pending, running, completed, failed]
+
+    StageOutputs:
+      type: object
+      properties:
+        stage:
+          type: string
+        data:
+          description: 阶段特定的产出数据结构
+
+    ReportDetail:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        abstract:
+          type: string
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              heading:
+                type: string
+              content:
+                type: string
+                description: Markdown 格式，含内联引用标记 [1], [2]
+              citations:
+                type: array
+                items:
+                  type: integer
+        citations:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              text:
+                type: string
+                description: 完整引用文本
+              source_ref:
+                type: string
+                description: RetrievalResult ID
+        gap_notes:
+          type: string
+          nullable: true
+        generated_at:
+          type: string
+          format: date-time
+
+    CitationDetail:
+      type: object
+      properties:
+        index:
+          type: integer
+        source:
+          type: object
+          properties:
+            title:
+              type: string
+            authors:
+              type: array
+              items:
+                type: string
+            url:
+              type: string
+              nullable: true
+            doi:
+              type: string
+              nullable: true
+            published_date:
+              type: string
+              nullable: true
+            source_type:
+              type: string
+            credibility:
+              type: string
+              enum: [high, medium, low, unknown]
+            excerpt:
+              type: string
+              description: 检索时抓取的原文摘录
+            snapshot_available:
+              type: boolean
+              description: 是否有本地快照
+            original_url_active:
+              type: boolean
+              description: 原始URL当前是否可访问
+
+    DocumentSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        file_type:
+          type: string
+        file_size_bytes:
+          type: integer
+        processing_status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        uploaded_at:
+          type: string
+          format: date-time
+
+    DocumentListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentSummary"
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+
+    DocumentDetail:
+      allOf:
+        - $ref: "#/components/schemas/DocumentSummary"
+      properties:
+        processing_error:
+          type: string
+          nullable: true
+        processed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    SearchResult:
+      type: object
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        chunk_text:
+          type: string
+        page_number:
+          type: integer
+        score:
+          type: number
+
+    SearchResponse:
+      type: object
+      properties:
+        query:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+        total:
+          type: integer
+
+    AskResponse:
+      type: object
+      properties:
+        question:
+          type: string
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            type: object
+            properties:
+              document_id:
+                type: string
+              filename:
+                type: string
+              chunk_text:
+                type: string
+              page_number:
+                type: integer
