@@ -46,49 +46,50 @@
 
 ### Database & Configuration
 
-- [ ] T011 Implement configuration management with environment variable loading in `backend/core/config.py`
-- [ ] T012 [P] Implement PostgreSQL connection manager with SQLAlchemy async engine in `backend/core/database.py`
-- [ ] T013 [P] Implement MongoDB connection manager with Motor async client in `backend/core/database.py`
-- [ ] T014 [P] Implement Elasticsearch connection manager with elasticsearch-py async client in `backend/core/database.py`
-- [ ] T015 Create PostgreSQL table migration scripts for User, ResearchTask, ResearchReport, Citation, Document in `backend/db/postgresql/`
+- [X] T011 Implement configuration management with environment variable loading in `backend/core/config.py`
+- [X] T012 [P] Implement PostgreSQL connection manager with SQLAlchemy async engine in `backend/core/database.py`
+- [X] T013 [P] Implement MongoDB connection manager with Motor async client in `backend/core/database.py`
+- [X] T014 [P] Implement Elasticsearch connection manager with elasticsearch-py async client in `backend/core/database.py`
+- [X] T014a [P] Define Elasticsearch index mappings — DocumentChunk (dense_vector 1536d, text ik_max_word, chunk_metadata, parent_doc_id) and RetrievalResult (keyword + text fields for full-text search) in `backend/db/elasticsearch/mappings.py`
+- [X] T015 Create PostgreSQL table migration scripts for User, ResearchTask, ResearchReport, Citation, Document in `backend/db/postgresql/`
 
 ### Core Models (PostgreSQL)
 
-- [ ] T016 [P] Define User ORM model in `backend/models/user.py`
-- [ ] T017 [P] Define ResearchTask ORM model (id, user_id, topic, status, current_phase, progress_message, timestamps, error_message, retry_count, config_json) in `backend/models/task.py`
-- [ ] T018 [P] Define ResearchReport ORM model (id, task_id, title, abstract, sections_json, citations_json, gap_notes) in `backend/models/report.py`
-- [ ] T019 [P] Define Citation ORM model (id, report_id, index_number, retrieval_result_id, context_in_report) in `backend/models/report.py`
-- [ ] T020 [P] Define Document ORM model (id, user_id, filename, file_type, file_size_bytes, storage_path, processing_status, es_index_name) in `backend/models/document.py`
+- [X] T016 [P] Define User ORM model in `backend/models/user.py`
+- [X] T017 [P] Define ResearchTask ORM model (id, user_id, topic, status, current_phase, progress_message, timestamps, error_message, retry_count, config_json) in `backend/models/task.py`
+- [X] T018 [P] Define ResearchReport ORM model (id, task_id, title, abstract, sections_json, citations_json, gap_notes) in `backend/models/report.py`
+- [X] T019 [P] Define Citation ORM model (id, report_id, index_number, retrieval_result_id, context_in_report) in `backend/models/report.py`
+- [X] T020 [P] Define Document ORM model (id, user_id, filename, file_type, file_size_bytes, storage_path, processing_status, es_index_name) in `backend/models/document.py`
 
 ### Core Schemas (Pydantic)
 
-- [ ] T021 [P] Define User Pydantic schemas (UserCreate, UserRead, UserUpdate, UserLogin, TokenPair) in `backend/schemas/user.py`
-- [ ] T022 [P] Define ResearchTask Pydantic schemas (TaskCreate, TaskRead, TaskList, TaskStatus) in `backend/schemas/task.py`
-- [ ] T023 [P] Define shared response schemas (ErrorResponse, PaginatedResponse) in `backend/schemas/__init__.py`
+- [X] T021 [P] Define User Pydantic schemas (UserCreate, UserRead, UserUpdate, UserLogin, TokenPair) in `backend/schemas/user.py`
+- [X] T022 [P] Define ResearchTask Pydantic schemas (TaskCreate, TaskRead, TaskList, TaskStatus) in `backend/schemas/task.py`
+- [X] T023 [P] Define shared response schemas (ErrorResponse, PaginatedResponse) in `backend/schemas/__init__.py`
 
 ### Auth Middleware
 
-- [ ] T024 Implement JWT access token + refresh token generation and validation in `backend/core/security.py`
-- [ ] T025 Implement bcrypt password hashing utilities in `backend/core/security.py`
-- [ ] T026 Implement `get_current_user` dependency with JWT extraction and user lookup in `backend/api/deps.py`
-- [ ] T027 Implement user isolation middleware — inject `user_id` filter into all data access queries in `backend/api/deps.py`
+- [X] T024 Implement JWT access token + refresh token generation and validation in `backend/core/security.py`
+- [X] T025 Implement bcrypt password hashing utilities in `backend/core/security.py`
+- [X] T026 Implement `get_current_user` dependency with JWT extraction and user lookup in `backend/api/deps.py`
+- [X] T027 Implement user isolation middleware — inject `user_id` filter into all data access queries in `backend/api/deps.py`
 
 ### API Foundation
 
-- [ ] T028 Create FastAPI application instance with CORS, error handlers, and structured logging middleware in `backend/main.py`
-- [ ] T029 Create v1 API router with tag grouping (Auth, Users, Tasks, Research, Reports, Knowledge) in `backend/api/v1/router.py`
-- [ ] T030 [P] Implement global error handlers (404, 422, 500) with Problem Details format in `backend/api/__init__.py`
-- [ ] T031 [P] Implement structured logging utility with task_id/user_id/agent/timestamp context in `backend/utils/logging.py`
+- [X] T028 Create FastAPI application instance with CORS, error handlers, and structured logging middleware in `backend/main.py`
+- [X] T029 Create v1 API router with tag grouping (Auth, Users, Tasks, Research, Reports, Knowledge) in `backend/api/v1/router.py`
+- [X] T030 [P] Implement global error handlers (404, 422, 500) with Problem Details format in `backend/api/__init__.py`
+- [X] T031 [P] Implement structured logging utility with task_id/user_id/agent/timestamp context in `backend/utils/logging.py`
 
 ### Agent Framework
 
-- [ ] T032 Define Agent base class with abstract `run(state) → state` interface and AgentRegistry in `backend/agents/base.py`
-- [ ] T033 [P] Define LLM provider abstract interface (`LLMProvider.chat()`, `LLMProvider.embed()`) and OpenAI-compatible implementation in `backend/tools/llm.py`
-- [ ] T034 Define research workflow state schema (TypedDict with all stage inputs/outputs) in `backend/schemas/research.py`
+- [X] T032 Define Agent base class with abstract `run(state) → state` interface and AgentRegistry in `backend/agents/base.py`
+- [X] T033 [P] Define LLM provider abstract interface (`LLMProvider.chat()`, `LLMProvider.embed()`) and OpenAI-compatible implementation in `backend/tools/llm.py`
+- [X] T034 Define research workflow state schema (TypedDict with all stage inputs/outputs) in `backend/schemas/research.py`
 
 ### Frontend Foundation
 
-- [ ] T035 Set up Axios instance with base URL, JWT interceptor (attach token, handle 401 → refresh → retry), and error handling in `frontend/src/api/client.ts`
+- [X] T035 Set up Axios instance with base URL, JWT interceptor (attach token, handle 401 → refresh → retry), and error handling in `frontend/src/api/client.ts`
 
 **Checkpoint**: Foundation ready — user story implementation can now begin. Backend starts with `uvicorn main:app`, frontend with `npm run dev`. Auth middleware validates tokens, DB connections established, Agent registry ready.
 
@@ -263,6 +264,7 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 
 ### Frontend Knowledge Base UI
 
+- [ ] T103a [US5] Define Document Pydantic schemas (DocumentUpload, DocumentRead, DocumentList, AskRequest, AskResponse, SearchResultRead) in `backend/schemas/document.py`
 - [ ] T104 [P] [US5] Define TypeScript types for Document, DocumentChunk, SearchResult, AskResponse in `frontend/src/types/document.ts`
 - [ ] T105 [P] [US5] Implement knowledge API client functions (uploadDocument, listDocuments, deleteDocument, searchKnowledge, askQuestion) in `frontend/src/api/knowledge.ts`
 - [ ] T106 [US5] Implement Pinia knowledge store with document list, upload/delete actions, search/ask state in `frontend/src/stores/knowledge.ts`
@@ -315,6 +317,8 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 - [ ] T126 [P] Add response compression middleware (gzip) to FastAPI in `backend/main.py`
 - [ ] T127 [P] Add API rate limiting for auth endpoints (register: 5/min, login: 10/min per IP) in `backend/api/v1/auth.py`
 - [ ] T128 Security hardening — verify all user-scoped queries filter by user_id, confirm no sensitive data in error responses, audit log masking
+- [ ] T129 [P] Implement concurrency stress test — run 50 simultaneous research tasks, verify no result confusion, no state corruption, no cross-user data leaks in `tests/integration/test_concurrency.py`
+- [ ] T130 [P] Implement long-duration stability test — continuous 10-hour research task execution with memory profiling, verify no memory leaks, no performance degradation, checkpoint integrity maintained in `tests/stability/test_long_running.py`
 
 ---
 
