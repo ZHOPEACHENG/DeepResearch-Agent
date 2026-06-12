@@ -176,8 +176,9 @@ pending ──> running ──> completed
 | sections_json | JSONB | NOT NULL | 分节正文（含内联引用标记） |
 | citations_json | JSONB | NOT NULL | 引用列表汇总 |
 | gap_notes | TEXT | nullable | 知识缺口说明 |
-| generated_at | TIMESTAMP | default now() | 生成时间 |
 | export_format_log | JSONB | default '[]' | 导出记录 [{format: "pdf", exported_at: "..."}] |
+| created_at | TIMESTAMP | default now() | 创建时间 |
+| updated_at | TIMESTAMP | auto-update | 最后更新时间 |
 
 ### Citation (PostgreSQL)
 
@@ -186,7 +187,7 @@ pending ──> running ──> completed
 | id | UUID | PK | 引用唯一标识 |
 | report_id | UUID | FK → ResearchReport.id | 所属报告 |
 | index_number | INTEGER | NOT NULL | 引用序号 [1], [2], ... |
-| retrieval_result_id | VARCHAR(24) | NOT NULL | 关联 MongoDB 中的 RetrievalResult |
+| retrieval_result_id | VARCHAR(24) | NOT NULL | 关联 MongoDB 中 RetrievalResult 的 _id（24字符 hex 字符串） |
 | context_in_report | TEXT | nullable | 引用在报告中的上下文位置 |
 
 ### Document (PostgreSQL)
@@ -202,7 +203,8 @@ pending ──> running ──> completed
 | processing_status | VARCHAR(20) | default 'pending' | pending / processing / completed / failed |
 | processing_error | TEXT | nullable | 处理失败原因 |
 | es_index_name | VARCHAR(100) | nullable | ES 索引名称 |
-| uploaded_at | TIMESTAMP | default now() | 上传时间 |
+| created_at | TIMESTAMP | default now() | 上传时间 |
+| updated_at | TIMESTAMP | auto-update | 最后更新时间 |
 | processed_at | TIMESTAMP | nullable | 处理完成时间 |
 
 ### DocumentChunk (Elasticsearch)

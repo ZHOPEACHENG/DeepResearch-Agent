@@ -30,7 +30,9 @@ class ResearchTask(Base):
     )
     current_phase: Mapped[str | None] = mapped_column(String(30), nullable=True)
     progress_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    progress_pct: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     elapsed_seconds: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)

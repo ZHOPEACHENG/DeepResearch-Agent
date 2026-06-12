@@ -39,9 +39,6 @@ DOCUMENT_CHUNK_MAPPING = {
                 "type": "text",
                 "analyzer": "chinese_analyzer",
                 "search_analyzer": "ik_smart",
-                "fields": {
-                    "raw": {"type": "keyword", "ignore_above": 32766},
-                },
             },
             "embedding": {
                 "type": "dense_vector",
@@ -86,15 +83,18 @@ RETRIEVAL_RESULT_MAPPING = {
             "title": {
                 "type": "text",
                 "analyzer": "chinese_analyzer",
+                "search_analyzer": "ik_smart",
                 "fields": {"raw": {"type": "keyword", "ignore_above": 512}},
             },
             "abstract": {
                 "type": "text",
                 "analyzer": "chinese_analyzer",
+                "search_analyzer": "ik_smart",
             },
             "excerpt_text": {
                 "type": "text",
                 "analyzer": "chinese_analyzer",
+                "search_analyzer": "ik_smart",
             },
             "source_url": {"type": "keyword"},
             "doi": {"type": "keyword"},

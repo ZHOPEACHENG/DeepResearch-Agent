@@ -27,12 +27,12 @@ class ResearchReport(Base):
         unique=True,
         nullable=False,
     )
-    title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sections_json: Mapped[list] = mapped_column(JSONB, default=list)
-    citations_json: Mapped[list] = mapped_column(JSONB, default=list)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    abstract: Mapped[str] = mapped_column(Text, nullable=False)
+    sections_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    citations_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     gap_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    export_format: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    export_format_log: Mapped[list] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -61,8 +61,8 @@ class Citation(Base):
         index=True,
     )
     index_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    retrieval_result_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
+    retrieval_result_id: Mapped[str] = mapped_column(
+        String(24), nullable=False
     )
     context_in_report: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

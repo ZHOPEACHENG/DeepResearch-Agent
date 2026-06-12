@@ -39,9 +39,25 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     logger.info("application_startup")
 
-    await postgres_connect()
-    await mongo_connect()
-    await es_connect()
+    try:
+        await postgres_connect()
+    except RuntimeError:
+        logger.error("startup_aborted", reason="PostgreSQL unavailable")
+        raise
+
+    try:
+        await mongo_connect()
+    except RuntimeError:
+        logger.error("startup_aborted", reason="MongoDB unavailable")
+        raise
+
+    try:
+        await es_connect()
+    except RuntimeError:
+        logger.error("startup_aborted", reason="Elasticsearch unavailable")
+        raise
+
+    logger.info("all_databases_connected")
 
     yield
 

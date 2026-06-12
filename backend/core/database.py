@@ -14,6 +14,7 @@ logger = get_logger(__name__)
 # PostgreSQL (SQLAlchemy async)
 # ═══════════════════════════════════════════════════════════════════════
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -30,19 +31,34 @@ async def postgres_connect() -> None:
     """Initialize the PostgreSQL async engine and session factory."""
     global _postgres_engine, _postgres_session_factory
 
-    _postgres_engine = create_async_engine(
-        settings.postgres_url,
-        echo=False,
-        pool_size=20,
-        max_overflow=10,
-        pool_pre_ping=True,
-    )
-    _postgres_session_factory = async_sessionmaker(
-        _postgres_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    logger.info("postgresql_connected", url=settings.postgres_url.split("@")[-1])
+    try:
+        _postgres_engine = create_async_engine(
+            settings.postgres_url,
+            echo=False,
+            pool_size=20,
+            max_overflow=10,
+            pool_pre_ping=True,
+        )
+        _postgres_session_factory = async_sessionmaker(
+            _postgres_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        # Verify by making a real connection
+        async with _postgres_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        logger.info("postgresql_connected", host=settings.postgres_host, port=settings.postgres_port, db=settings.postgres_db)
+    except Exception as e:
+        logger.error(
+            "postgresql_connection_failed",
+            host=settings.postgres_host,
+            port=settings.postgres_port,
+            db=settings.postgres_db,
+            error=str(e),
+        )
+        raise RuntimeError(
+            f"PostgreSQL connection failed ({settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}): {e}"
+        ) from e
 
 
 async def postgres_disconnect() -> None:
@@ -86,11 +102,24 @@ async def mongo_connect() -> None:
     """Initialize the MongoDB async client and select the application database."""
     global _mongo_client, _mongo_db
 
-    _mongo_client = AsyncIOMotorClient(settings.mongo_url)
-    _mongo_db = _mongo_client[settings.mongo_db]
-    # Verify connectivity
-    await _mongo_client.admin.command("ping")
-    logger.info("mongodb_connected", db=settings.mongo_db)
+    try:
+        _mongo_client = AsyncIOMotorClient(
+            settings.mongo_url, serverSelectionTimeoutMS=5000
+        )
+        _mongo_db = _mongo_client[settings.mongo_db]
+        await _mongo_client.admin.command("ping")
+        logger.info("mongodb_connected", host=settings.mongo_host, port=settings.mongo_port, db=settings.mongo_db)
+    except Exception as e:
+        logger.error(
+            "mongodb_connection_failed",
+            host=settings.mongo_host,
+            port=settings.mongo_port,
+            db=settings.mongo_db,
+            error=str(e),
+        )
+        raise RuntimeError(
+            f"MongoDB connection failed ({settings.mongo_host}:{settings.mongo_port}/{settings.mongo_db}): {e}"
+        ) from e
 
 
 async def mongo_disconnect() -> None:
@@ -134,15 +163,25 @@ async def es_connect() -> None:
     """Initialize the Elasticsearch async client."""
     global _es_client
 
-    _es_client = AsyncElasticsearch(
-        hosts=[settings.es_url],
-        # Disable sniffing for single-node deployments
-        sniff_on_start=False,
-        sniff_on_connection_fail=False,
-    )
-    # Verify connectivity
-    await _es_client.info()
-    logger.info("elasticsearch_connected", url=settings.es_url)
+    try:
+        _es_client = AsyncElasticsearch(
+            hosts=[settings.es_url],
+            sniff_on_start=False,
+            sniff_on_connection_fail=False,
+            request_timeout=5,
+        )
+        await _es_client.info()
+        logger.info("elasticsearch_connected", host=settings.es_host, port=settings.es_port)
+    except Exception as e:
+        logger.error(
+            "elasticsearch_connection_failed",
+            host=settings.es_host,
+            port=settings.es_port,
+            error=str(e),
+        )
+        raise RuntimeError(
+            f"Elasticsearch connection failed ({settings.es_host}:{settings.es_port}): {e}"
+        ) from e
 
 
 async def es_disconnect() -> None:

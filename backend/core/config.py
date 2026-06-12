@@ -53,6 +53,7 @@ class Settings(BaseSettings):
         return (
             f"mongodb://{self.mongo_root_user}:{self.mongo_root_password}"
             f"@{self.mongo_host}:{self.mongo_port}"
+            f"/{self.mongo_db}?authSource=admin"
         )
 
     # ── Elasticsearch ────────────────────────────────────────────────
