@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     llm_api_key: str
     llm_api_base: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o"
+    llm_embed_model: str = "text-embedding-3-small"
 
     # ── Search ───────────────────────────────────────────────────────
     search_provider: str = "tavily"

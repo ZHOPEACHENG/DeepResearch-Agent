@@ -34,6 +34,7 @@ cp .env.example .env
 LLM_API_KEY=your-api-key-here
 LLM_API_BASE=https://api.openai.com/v1
 LLM_MODEL=gpt-4o
+LLM_EMBED_MODEL=text-embedding-3-small
 
 # 搜索 API 配置（必填）
 SEARCH_API_KEY=your-search-api-key

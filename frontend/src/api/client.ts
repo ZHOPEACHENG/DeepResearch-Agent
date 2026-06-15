@@ -114,13 +114,13 @@ apiClient.interceptors.response.use(
         `${apiClient.defaults.baseURL}/auth/refresh`,
         { refresh_token: refreshToken },
       )
-      const { access_token, refresh_token: newRefreshToken } = response.data
-      setTokens(access_token, newRefreshToken)
+      const { accessToken, refreshToken: newRefreshToken } = response.data
+      setTokens(accessToken, newRefreshToken)
 
-      processQueue(null, access_token)
+      processQueue(null, accessToken)
 
       if (originalRequest.headers) {
-        originalRequest.headers.Authorization = `Bearer ${access_token}`
+        originalRequest.headers.Authorization = `Bearer ${accessToken}`
       }
       return apiClient(originalRequest)
     } catch (refreshError) {

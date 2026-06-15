@@ -4,7 +4,8 @@ Shared/common Pydantic schemas for the API.
 Includes generic response wrappers, error formats, and pagination helpers.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 
 
 class ErrorResponse(BaseModel):
@@ -15,6 +16,11 @@ class ErrorResponse(BaseModel):
     title: str | None = None
     instance: str | None = None
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 class PaginatedResponse(BaseModel):
     """Generic paginated response wrapper."""
@@ -23,11 +29,21 @@ class PaginatedResponse(BaseModel):
     page: int = 1
     page_size: int = 20
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 class MessageResponse(BaseModel):
     """Simple message response for status updates."""
     message: str
     success: bool = True
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class HealthResponse(BaseModel):
@@ -36,3 +52,8 @@ class HealthResponse(BaseModel):
     postgresql: bool
     mongodb: bool
     elasticsearch: bool
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )

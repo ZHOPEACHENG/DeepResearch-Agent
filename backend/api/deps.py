@@ -4,19 +4,20 @@ FastAPI dependency injection utilities.
 Provides:
 - get_current_user: JWT extraction → DB lookup → User ORM injection
 - get_current_active_user: extends get_current_user with active-check
-- User isolation: all data-access queries MUST be scoped to current user
+- User isolation: service-layer MUST filter queries by user.id from get_current_user
 """
-
-from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError
+from jose import JWTError, JWSError
 from sqlalchemy import select
 
 from backend.core.database import get_postgres_session
 from backend.core.security import decode_token
 from backend.models.user import User
+from backend.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 _auth_scheme = HTTPBearer(auto_error=False)
 
@@ -28,7 +29,7 @@ async def get_current_user(
     Extract and validate JWT from Authorization header, return the authenticated User.
 
     Raises 401 if token is missing, expired, or invalid.
-    Raises 401 if user does not exist or is deactivated.
+    Raises 401 if user does not exist.
     """
     if credentials is None:
         raise HTTPException(
@@ -41,7 +42,8 @@ async def get_current_user(
 
     try:
         payload = decode_token(token)
-    except JWTError:
+    except (JWTError, JWSError):
+        logger.warning("auth_token_invalid", token=token[:8] + "...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
@@ -49,30 +51,26 @@ async def get_current_user(
         )
 
     if payload.type != "access":
+        logger.warning("auth_wrong_token_type", actual=payload.type)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not an access token",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Lookup user
+    # Lookup user — use async with to ensure session is closed after use
     session = get_postgres_session()
-    async with session.begin():
+    async with session:
         result = await session.execute(
             select(User).where(User.id == payload.sub)
         )
         user = result.scalar_one_or_none()
 
     if user is None:
+        logger.warning("auth_user_not_found", sub=payload.sub)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
-        )
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is deactivated",
         )
 
     return user
@@ -81,18 +79,11 @@ async def get_current_user(
 async def get_current_active_user(
     current_user: User = Depends(get_current_user),
 ) -> User:
-    """Convenience alias. Enforces active check (already done in get_current_user)."""
+    """Identity + active status check. Use for all write/business endpoints."""
+    if not current_user.is_active:
+        logger.warning("auth_inactive_user", sub=str(current_user.id))
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is deactivated",
+        )
     return current_user
-
-
-def user_scoped_query(user_id: UUID):
-    """
-    Return a filter condition that restricts a query to the given user.
-
-    Usage:
-        session.execute(select(ResearchTask).where(user_scoped_query(user_id)))
-    """
-    from backend.models.task import ResearchTask
-    # This is a closure — used in service layer to build user-scoped where clauses
-    pass  # Implemented per-model in service layer for clarity; this function
-    # documents the pattern: always add `.where(Model.user_id == current_user.id)`

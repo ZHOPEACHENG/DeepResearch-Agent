@@ -15,6 +15,9 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from backend.core.config import settings
+from backend.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # ── Password Hashing ─────────────────────────────────────────────────
 
@@ -35,8 +38,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 class TokenPayload(BaseModel):
     """Decoded JWT payload."""
-    sub: str       # user_id as string
-    type: str = "access"   # "access" | "refresh"
+    sub: str
+    type: str = ""
     exp: int | None = None
 
 
@@ -50,11 +53,12 @@ def create_access_token(user_id: str) -> str:
         minutes=settings.jwt_access_token_expire_minutes
     )
     payload = {
-        "sub": user_id,
+        "sub": str(user_id),
         "type": "access",
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
+    logger.info("access_token_created", sub=str(user_id), expires=expire.isoformat())
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -68,11 +72,12 @@ def create_refresh_token(user_id: str) -> str:
         days=settings.jwt_refresh_token_expire_days
     )
     payload = {
-        "sub": user_id,
+        "sub": str(user_id),
         "type": "refresh",
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
+    logger.info("refresh_token_created", sub=str(user_id), expires=expire.isoformat())
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -81,17 +86,28 @@ def decode_token(token: str) -> TokenPayload:
     Decode and validate a JWT token.
 
     Raises:
-        JWTError: If token is expired, malformed, or invalid.
+        JWTError: If token is expired, malformed, invalid, or missing required claims.
     """
-    payload = jwt.decode(
-        token,
-        settings.jwt_secret_key,
-        algorithms=[settings.jwt_algorithm],
-    )
+    token_preview = token[:8] + "..." if len(token) > 8 else token
+    try:
+        raw = jwt.decode(
+            token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
+        )
+    except JWTError:
+        logger.warning("token_decode_failed", token=token_preview)
+        raise
+
+    sub = raw.get("sub")
+    if sub is None:
+        logger.warning("token_missing_sub", token=token_preview)
+        raise JWTError("Token missing 'sub' claim")
+
     return TokenPayload(
-        sub=payload["sub"],
-        type=payload.get("type", "access"),
-        exp=payload.get("exp"),
+        sub=sub,
+        type=raw.get("type", ""),
+        exp=raw.get("exp"),
     )
 
 
@@ -101,7 +117,7 @@ MAX_LOGIN_ATTEMPTS = 3
 LOCKOUT_DURATION_MINUTES = 15
 
 
-def is_account_locked(login_attempts: int, locked_until: datetime | None) -> bool:
+def is_account_locked(locked_until: datetime | None) -> bool:
     """
     Check if an account is currently locked due to too many failed login attempts.
 
@@ -125,6 +141,7 @@ def record_failed_login(login_attempts: int) -> tuple[int, datetime | None]:
         lock_until = datetime.now(timezone.utc) + timedelta(
             minutes=LOCKOUT_DURATION_MINUTES
         )
+        logger.warning("account_locked", attempts=attempts, locked_until=lock_until.isoformat())
         return attempts, lock_until
     return attempts, None
 

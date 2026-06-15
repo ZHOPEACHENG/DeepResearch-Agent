@@ -9,7 +9,8 @@ from datetime import datetime
 from typing import TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 
 # ── Research Workflow State (LangGraph TypedDict) ────────────────────
@@ -47,6 +48,11 @@ class ResearchQuestion(BaseModel):
     priority: int = 1
     sub_questions: list["ResearchQuestion"] = []
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 class ResearchPlanSchema(BaseModel):
     """Output of the Planner agent."""
@@ -56,6 +62,11 @@ class ResearchPlanSchema(BaseModel):
     search_keywords: list[str] = []
     priority_order: list[str] = []
     generated_at: datetime | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class RetrievalResultSchema(BaseModel):
@@ -75,6 +86,11 @@ class RetrievalResultSchema(BaseModel):
     snapshot_text: str = ""
     retrieved_at: datetime | None = None
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 class KnowledgeSummarySchema(BaseModel):
     """Output of the Analyzer agent — integrated knowledge."""
@@ -83,6 +99,11 @@ class KnowledgeSummarySchema(BaseModel):
     summary_content: str
     citation_map: dict[str, str] = {}  # knowledge_chunk_id → retrieval_result_id
     generated_at: datetime | None = None
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class KnowledgeGapSchema(BaseModel):
@@ -95,6 +116,11 @@ class KnowledgeGapSchema(BaseModel):
     retrieval_status: str = "pending"
     created_at: datetime | None = None
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 class StageOutputs(BaseModel):
     """Aggregated outputs for a research task (all stages)."""
@@ -103,3 +129,8 @@ class StageOutputs(BaseModel):
     retrieval_rounds: list[list[RetrievalResultSchema]] = []
     knowledge_summaries: list[KnowledgeSummarySchema] = []
     knowledge_gaps: list[KnowledgeGapSchema] = []
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )

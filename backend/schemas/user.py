@@ -7,7 +7,8 @@ Defines the API contract for registration, login, profile operations.
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic.alias_generators import to_camel
 
 
 # ── Request Schemas ──────────────────────────────────────────────────
@@ -81,6 +82,11 @@ class TokenPair(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
 
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
 
 class UserRead(BaseModel):
     """Public user profile (returned by API)."""
@@ -92,4 +98,8 @@ class UserRead(BaseModel):
     is_active: bool
     created_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(
+        from_attributes=True,
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )

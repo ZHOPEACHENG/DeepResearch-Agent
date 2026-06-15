@@ -6,10 +6,10 @@ export interface User {
   id: string
   username: string
   email: string
-  display_name: string | null
+  displayName: string | null
   institution: string | null
-  is_active: boolean
-  created_at: string
+  isActive: boolean
+  createdAt: string
 }
 
 export interface LoginRequest {
@@ -26,9 +26,9 @@ export interface RegisterRequest {
 }
 
 export interface TokenPair {
-  access_token: string
-  refresh_token: string
-  token_type: string
+  accessToken: string
+  refreshToken: string
+  tokenType: string
 }
 
 export interface UserUpdateRequest {

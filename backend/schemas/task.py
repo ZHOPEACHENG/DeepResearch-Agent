@@ -5,7 +5,8 @@ Pydantic schemas for ResearchTask-related request/response validation.
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 
 # ── Request Schemas ──────────────────────────────────────────────────
@@ -35,7 +36,11 @@ class TaskStatusRead(BaseModel):
     updated_at: datetime
     completed_at: datetime | None = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(
+        from_attributes=True,
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class TaskRead(TaskStatusRead):
@@ -52,3 +57,8 @@ class TaskListResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 20
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )

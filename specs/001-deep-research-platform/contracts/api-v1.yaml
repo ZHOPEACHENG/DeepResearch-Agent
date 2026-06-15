@@ -674,14 +674,14 @@ components:
     TokenPair:
       type: object
       properties:
-        access_token:
+        accessToken:
           type: string
-        refresh_token:
+        refreshToken:
           type: string
-        token_type:
+        tokenType:
           type: string
           enum: [bearer]
-        expires_in:
+        expiresIn:
           type: integer
           description: Access Token 有效期（秒）
 
@@ -695,13 +695,13 @@ components:
           type: string
         email:
           type: string
-        display_name:
+        displayName:
           type: string
           nullable: true
         institution:
           type: string
           nullable: true
-        created_at:
+        createdAt:
           type: string
           format: date-time
 
@@ -730,16 +730,16 @@ components:
         status:
           type: string
           enum: [pending, running, paused, completed, failed]
-        current_phase:
+        currentPhase:
           type: string
           nullable: true
-        progress_message:
+        progressMessage:
           type: string
           nullable: true
-        created_at:
+        createdAt:
           type: string
           format: date-time
-        updated_at:
+        updatedAt:
           type: string
           format: date-time
 
@@ -754,7 +754,7 @@ components:
           type: integer
         page:
           type: integer
-        page_size:
+        pageSize:
           type: integer
 
     TaskDetail:
@@ -762,26 +762,26 @@ components:
       allOf:
         - $ref: "#/components/schemas/TaskSummary"
       properties:
-        elapsed_seconds:
+        elapsedSeconds:
           type: integer
-        error_message:
+        errorMessage:
           type: string
           nullable: true
-        stage_outputs:
+        stageOutputs:
           type: object
           properties:
-            plan_ref:
+            planRef:
               type: string
               nullable: true
-            retrieval_summary:
+            retrievalSummary:
               type: object
               nullable: true
               properties:
-                total_rounds:
+                totalRounds:
                   type: integer
-                total_results:
+                totalResults:
                   type: integer
-            knowledge_summary_refs:
+            knowledgeSummaryRefs:
               type: array
               items:
                 type: string
@@ -791,7 +791,7 @@ components:
               items:
                 $ref: "#/components/schemas/GapSummary"
               nullable: true
-            report_ref:
+            reportRef:
               type: string
               nullable: true
 
@@ -802,7 +802,7 @@ components:
           type: string
         description:
           type: string
-        retrieval_status:
+        retrievalStatus:
           type: string
           enum: [pending, running, completed, failed]
 
@@ -820,7 +820,7 @@ components:
         id:
           type: string
           format: uuid
-        task_id:
+        taskId:
           type: string
           format: uuid
         title:
@@ -851,13 +851,13 @@ components:
               text:
                 type: string
                 description: 完整引用文本
-              source_ref:
+              sourceRef:
                 type: string
                 description: RetrievalResult ID
-        gap_notes:
+        gapNotes:
           type: string
           nullable: true
-        generated_at:
+        generatedAt:
           type: string
           format: date-time
 
@@ -881,10 +881,10 @@ components:
             doi:
               type: string
               nullable: true
-            published_date:
+            publishedDate:
               type: string
               nullable: true
-            source_type:
+            sourceType:
               type: string
             credibility:
               type: string
@@ -892,10 +892,10 @@ components:
             excerpt:
               type: string
               description: 检索时抓取的原文摘录
-            snapshot_available:
+            snapshotAvailable:
               type: boolean
               description: 是否有本地快照
-            original_url_active:
+            originalUrlActive:
               type: boolean
               description: 原始URL当前是否可访问
 
@@ -907,14 +907,14 @@ components:
           format: uuid
         filename:
           type: string
-        file_type:
+        fileType:
           type: string
-        file_size_bytes:
+        fileSizeBytes:
           type: integer
-        processing_status:
+        processingStatus:
           type: string
           enum: [pending, processing, completed, failed]
-        uploaded_at:
+        uploadedAt:
           type: string
           format: date-time
 
@@ -929,17 +929,17 @@ components:
           type: integer
         page:
           type: integer
-        page_size:
+        pageSize:
           type: integer
 
     DocumentDetail:
       allOf:
         - $ref: "#/components/schemas/DocumentSummary"
       properties:
-        processing_error:
+        processingError:
           type: string
           nullable: true
-        processed_at:
+        processedAt:
           type: string
           format: date-time
           nullable: true
@@ -947,14 +947,14 @@ components:
     SearchResult:
       type: object
       properties:
-        document_id:
+        documentId:
           type: string
           format: uuid
         filename:
           type: string
-        chunk_text:
+        chunkText:
           type: string
-        page_number:
+        pageNumber:
           type: integer
         score:
           type: number
@@ -983,11 +983,11 @@ components:
           items:
             type: object
             properties:
-              document_id:
+              documentId:
                 type: string
               filename:
                 type: string
-              chunk_text:
+              chunkText:
                 type: string
-              page_number:
+              pageNumber:
                 type: integer
