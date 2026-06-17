@@ -49,10 +49,10 @@ async def register(req: UserRegisterRequest):
     """
     try:
         token_pair = await register_user(req)
-    except ValueError:
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Username or email already registered",
+            detail=str(e),
         )
     except Exception:
         logger.error(

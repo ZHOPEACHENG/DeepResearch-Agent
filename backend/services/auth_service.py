@@ -27,7 +27,8 @@ from backend.core.security import (
     reset_login_attempts,
     verify_password,
 )
-from backend.models.user import User
+import backend.models  # noqa: F401 — ensure all ORM models are registered
+from backend.models import User
 from backend.schemas.user import TokenPair, UserRead, UserRegisterRequest
 from backend.utils.logging import get_logger
 

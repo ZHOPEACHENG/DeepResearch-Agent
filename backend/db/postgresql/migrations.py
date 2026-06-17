@@ -7,6 +7,8 @@ to run on every application startup.
 Tables: users, conversations, messages, research_tasks, research_reports, citations, documents
 """
 
+from sqlalchemy import text
+
 from backend.core.database import Base, _postgres_engine
 from backend.utils.logging import get_logger
 
@@ -186,16 +188,29 @@ async def run_migrations() -> None:
     """
     Execute table creation scripts.
 
-    Uses raw SQL for maximum control over column types and constraints.
-    Idempotent: all statements use IF NOT EXISTS.
+    Each statement is executed individually so that a failure in one
+    (e.g. duplicate constraint) does not skip later statements
+    (e.g. new column additions). All statements are idempotent.
     """
+    from sqlalchemy.exc import ProgrammingError
     from backend.core.database import _postgres_engine
 
     if _postgres_engine is None:
         raise RuntimeError("PostgreSQL not initialized. Call postgres_connect() first.")
 
+    statements = [s.strip() for s in CREATE_TABLES_SQL.split(";") if s.strip()]
+
     async with _postgres_engine.begin() as conn:
-        await _execute_sql(conn, CREATE_TABLES_SQL)
+        for stmt in statements:
+            # Use a savepoint so one failure doesn't abort the whole transaction
+            try:
+                async with conn.begin_nested():
+                    await conn.execute(text(stmt + ";"))
+            except ProgrammingError:
+                logger.info(
+                    "postgresql_migration_idempotent_skip",
+                    stmt=stmt[:80],
+                )
 
     logger.info("postgresql_migrations_complete")
 

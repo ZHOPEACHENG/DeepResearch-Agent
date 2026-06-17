@@ -67,9 +67,17 @@ async def lifespan(app: FastAPI):
     from backend.db.mongodb.init_collections import ensure_collections
     await ensure_collections()
 
-    # Ensure Elasticsearch indices exist (idempotent)
-    from backend.db.elasticsearch.mappings import create_indices
-    await create_indices()
+    # Ensure Elasticsearch indices exist (idempotent).
+    # ES index creation is non-critical — the platform works without it
+    # (knowledge-base search will return empty results until ES is ready).
+    try:
+        from backend.db.elasticsearch.mappings import create_indices
+        await create_indices()
+    except Exception:
+        logger.warning(
+            "elasticsearch_index_creation_failed",
+            detail="Ensure ES is running and the ik tokenizer plugin is installed",
+        )
 
     yield
 
