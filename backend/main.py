@@ -59,6 +59,18 @@ async def lifespan(app: FastAPI):
 
     logger.info("all_databases_connected")
 
+    # Run PostgreSQL migrations (idempotent CREATE IF NOT EXISTS)
+    from backend.db.postgresql.migrations import run_migrations
+    await run_migrations()
+
+    # Ensure MongoDB collections exist (idempotent)
+    from backend.db.mongodb.init_collections import ensure_collections
+    await ensure_collections()
+
+    # Ensure Elasticsearch indices exist (idempotent)
+    from backend.db.elasticsearch.mappings import create_indices
+    await create_indices()
+
     yield
 
     # Shutdown

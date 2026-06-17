@@ -41,6 +41,7 @@ class User(Base):
     # Relationships
     tasks = relationship("ResearchTask", back_populates="user", lazy="dynamic")
     documents = relationship("Document", back_populates="user", lazy="dynamic")
+    conversations = relationship("Conversation", back_populates="user", lazy="dynamic")
 
     def __repr__(self) -> str:
         return f"<User(id={self.id}, username={self.username})>"

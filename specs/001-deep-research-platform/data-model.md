@@ -6,7 +6,10 @@
 ## Entity-Relationship Overview
 
 ```text
-User (1) ────────< (N) ResearchTask
+User (1) ────────< (N) Conversation
+Conversation (1) ──< (N) Message
+Message (N) ───────> (1) ResearchTask (optional)
+
 User (1) ────────< (N) Document
 
 ResearchTask (1) ──< (1) ResearchPlan
@@ -26,7 +29,9 @@ Document (1) ────< (N) DocumentChunk
 | Entity | Storage | Reason |
 |--------|---------|--------|
 | User | PostgreSQL | 结构化数据，关系约束，ACID |
-| ResearchTask | PostgreSQL | 任务状态流转需事务保障 |
+| Conversation | PostgreSQL | 会话列表查询、分页、排序、级联删除 |
+| Message | PostgreSQL | 消息有序列表、多种消息类型（JSONB metadata）、事务写入 |
+| ResearchTask | PostgreSQL | 任务状态流转需事务保障（内部实体，关联 Message） |
 | ResearchPlan | MongoDB | JSON 层级结构（问题拆解树） |
 | RetrievalResult | MongoDB | 灵活 schema（不同来源字段各异） |
 | KnowledgeSummary | MongoDB | 文档型内容 + 引用映射 |
@@ -37,6 +42,47 @@ Document (1) ────< (N) DocumentChunk
 | DocumentChunk | Elasticsearch | 全文索引单元 |
 
 ## Entity Definitions
+
+### Conversation (PostgreSQL)
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| id | UUID | PK, default uuid4 | 会话唯一标识 |
+| user_id | UUID | FK → User.id, NOT NULL, INDEX | 所属用户 |
+| title | VARCHAR(200) | NOT NULL, default 'New Conversation' | 会话标题（自动生成/可编辑） |
+| model | VARCHAR(100) | NOT NULL, default from config | LLM 模型名（如 gpt-4o） |
+| context_window_tokens | INTEGER | default 0 | 上下文令牌计数 |
+| created_at | TIMESTAMP | default now() | 创建时间 |
+| updated_at | TIMESTAMP | auto-update | 最后活跃时间 |
+
+**Indexes**: (user_id, updated_at DESC) — 侧栏会话列表排序
+
+### Message (PostgreSQL)
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| id | UUID | PK, default uuid4 | 消息唯一标识 |
+| conversation_id | UUID | FK → Conversation.id, NOT NULL, INDEX, CASCADE | 所属会话 |
+| role | VARCHAR(20) | NOT NULL | user / assistant / system / tool |
+| content | TEXT | NOT NULL, default '' | 可见文本内容 |
+| message_type | VARCHAR(30) | NOT NULL, default 'text' | text / plan_card / retrieval_card / report_card / citation / error / gap_question |
+| parent_message_id | UUID | FK → Message.id, nullable, SET NULL | 线程回复（如 Plan 修改中的父消息） |
+| metadata | JSONB | default '{}' | 按 message_type 携带不同负载 |
+| token_count | INTEGER | default 0 | 估算令牌数 |
+| created_at | TIMESTAMP | default now() | 创建时间 |
+
+**Indexes**: (conversation_id, created_at ASC) — 消息按时间顺序加载
+
+**metadata JSONB 按 message_type**：
+
+| message_type | metadata 内容 |
+|-------------|---------------|
+| plan_card | { task_id, questions: [...], keywords: [...], status: "pending_confirmation\|accepted\|rejected\|modified" } |
+| retrieval_card | { task_id, round: 1, source_count: 15, sources: [...] } |
+| report_card | { task_id, report_id, sections: [...], citations: [...] } |
+| gap_question | { gap_id, description, severity: "critical\|moderate\|minor", status: "pending\|answered\|skipped" } |
+| citation | { index, retrieval_result_id, title, url } |
+| text | 无特殊 metadata（纯文本 content） |
 
 ### User (PostgreSQL)
 
@@ -60,6 +106,7 @@ Document (1) ────< (N) DocumentChunk
 |-------|------|-------------|-------------|
 | id | UUID | PK | 任务唯一标识 |
 | user_id | UUID | FK → User.id, NOT NULL | 所属用户 |
+| message_id | UUID | FK → Message.id, nullable, SET NULL | 触发研究的用户消息（隐藏于会话之下） |
 | topic | TEXT | NOT NULL, min_length=10 | 研究主题描述 |
 | status | VARCHAR(20) | NOT NULL, default 'pending' | 状态: pending / running / paused / completed / failed |
 | current_phase | VARCHAR(30) | nullable | 当前阶段: planning / retrieving / analyzing / synthesizing / reporting |
@@ -91,6 +138,7 @@ pending ──> running ──> completed
 {
   "_id": "ObjectId",
   "task_id": "UUID (关联 ResearchTask.id)",
+  "conversation_id": "UUID | null (关联 Conversation.id，会话触发时填充)",
   "research_questions": [
     {
       "id": "q1",
@@ -114,6 +162,7 @@ pending ──> running ──> completed
 {
   "_id": "ObjectId",
   "task_id": "UUID",
+  "conversation_id": "UUID | null",
   "round": 1,
   "source_type": "arxiv | semantic_scholar | web | knowledge_base",
   "title": "Paper or Page Title",
@@ -140,6 +189,7 @@ pending ──> running ──> completed
 {
   "_id": "ObjectId",
   "task_id": "UUID",
+  "conversation_id": "UUID | null",
   "phase": "initial_synthesis | gap_fill_round_1 | gap_fill_round_2 | gap_fill_round_3",
   "content": "Markdown 格式的结构化总结文本",
   "citation_map": {
@@ -156,6 +206,7 @@ pending ──> running ──> completed
 {
   "_id": "ObjectId",
   "task_id": "UUID",
+  "conversation_id": "UUID | null",
   "description": "缺口描述：该子问题缺少2024年之后的实证研究数据",
   "related_question_id": "q1.2",
   "triggered_retrieval": true,

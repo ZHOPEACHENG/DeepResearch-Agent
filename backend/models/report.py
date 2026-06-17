@@ -7,6 +7,7 @@ Citation: Individual source references within a report.
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, Integer, String, Text, func, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -29,10 +30,10 @@ class ResearchReport(Base):
     )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     abstract: Mapped[str] = mapped_column(Text, nullable=False)
-    sections_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
-    citations_json: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    sections_json: Mapped[list[Any]] = mapped_column(JSONB, default=list, nullable=False)
+    citations_json: Mapped[list[Any]] = mapped_column(JSONB, default=list, nullable=False)
     gap_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    export_format_log: Mapped[list] = mapped_column(JSONB, default=list)
+    export_format_log: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

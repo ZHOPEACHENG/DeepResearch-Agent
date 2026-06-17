@@ -6,7 +6,7 @@ plus Pydantic schemas for each stage's input/output data.
 """
 
 from datetime import datetime
-from typing import TypedDict
+from typing import Literal, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -112,6 +112,7 @@ class KnowledgeGapSchema(BaseModel):
     gap_id: UUID
     description: str
     related_question_id: str = ""
+    severity: Literal["critical", "moderate", "minor"] = "moderate"  # spec Clarification Q2
     triggered_retrieval: bool = False
     retrieval_status: str = "pending"
     created_at: datetime | None = None

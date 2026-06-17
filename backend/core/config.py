@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     llm_api_base: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o"
     llm_embed_model: str = "text-embedding-3-small"
+    chat_model: str = "gpt-4o"          # Model for conversational replies
+    intent_router_model: str = "gpt-4o" # Model for intent classification (can use cheaper model)
+    max_context_tokens: int = 128000    # Max tokens kept in conversation context window
+    available_models: list[str] = ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4-6", "claude-opus-4-8"]
 
     # ── Search ───────────────────────────────────────────────────────
     search_provider: str = "tavily"

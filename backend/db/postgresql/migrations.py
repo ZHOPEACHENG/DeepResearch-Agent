@@ -4,7 +4,7 @@ PostgreSQL table creation migrations.
 These scripts are idempotent — they use IF NOT EXISTS and are safe
 to run on every application startup.
 
-Tables: users, research_tasks, research_reports, citations, documents
+Tables: users, conversations, messages, research_tasks, research_reports, citations, documents
 """
 
 from backend.core.database import Base, _postgres_engine
@@ -105,6 +105,51 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(processing_status);
+
+-- Conversations table (Phase 3b — chat UX)
+CREATE TABLE IF NOT EXISTS conversations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    title VARCHAR(200) NOT NULL DEFAULT 'New Conversation',
+    model VARCHAR(100) NOT NULL DEFAULT 'gpt-4o',
+    context_window_tokens INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_conv_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
+    ON conversations(user_id, updated_at DESC);
+
+-- Messages table (Phase 3b — chat UX)
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    message_type VARCHAR(30) NOT NULL DEFAULT 'text',
+    parent_message_id UUID,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    token_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_msg_conv FOREIGN KEY (conversation_id)
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    CONSTRAINT fk_msg_parent FOREIGN KEY (parent_message_id)
+        REFERENCES messages(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
+    ON messages(conversation_id, created_at);
+
+-- Link ResearchTask to Message (Phase 3b)
+ALTER TABLE research_tasks
+    ADD COLUMN IF NOT EXISTS message_id UUID,
+    ADD CONSTRAINT fk_task_message FOREIGN KEY (message_id)
+        REFERENCES messages(id) ON DELETE SET NULL;
+
+-- Message model tracking (per-message model selection)
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS model VARCHAR(100);
 """
 
 DROP_TABLES_SQL = """
@@ -112,6 +157,8 @@ DROP TABLE IF EXISTS citations CASCADE;
 DROP TABLE IF EXISTS research_reports CASCADE;
 DROP TABLE IF EXISTS documents CASCADE;
 DROP TABLE IF EXISTS research_tasks CASCADE;
+DROP TABLE IF EXISTS messages CASCADE;
+DROP TABLE IF EXISTS conversations CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 """
 

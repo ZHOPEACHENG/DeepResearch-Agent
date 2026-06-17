@@ -13,7 +13,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/db/postgresql:/docker-entrypoint-initdb.d:ro
+      - ../backend/db/postgresql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepresearch} -d ${POSTGRES_DB:-deepresearch}"]
       interval: 10s
@@ -32,7 +32,7 @@ services:
       - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo_data:/data/db
-      - ./backend/db/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
+      - ../backend/db/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -75,6 +75,9 @@ services:
       - LLM_API_BASE=${LLM_API_BASE:-https://api.openai.com/v1}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o}
       - LLM_EMBED_MODEL=${LLM_EMBED_MODEL:-text-embedding-3-small}
+      - CHAT_MODEL=${CHAT_MODEL:-gpt-4o}
+      - INTENT_ROUTER_MODEL=${INTENT_ROUTER_MODEL:-gpt-4o}
+      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-128000}
       - SEARCH_API_KEY=${SEARCH_API_KEY}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}

@@ -108,35 +108,117 @@ US1 的研究流水线依赖本阶段的 Task CRUD + 状态机 + 中间产物存
 
 ### Implementation for User Story 2
 
-- [ ] T036 [P] [US2] Define MongoDB document schemas for ResearchPlan, RetrievalResult, KnowledgeSummary, KnowledgeGap in `backend/db/mongodb/init.js`
-- [ ] T037 [P] [US2] Define research-related Pydantic schemas (ResearchPlanSchema, RetrievalResultSchema, KnowledgeSummarySchema, KnowledgeGapSchema, StageOutputs) in `backend/schemas/research.py` (extend T034)
-- [ ] T038 [US2] Implement ResearchTask state machine with transitions: pending→running, running→paused, paused→running, running→completed, running→failed, failed→pending (retry) in `backend/services/task_service.py`
-- [ ] T039 [US2] Implement task CRUD operations: create_task (validate topic ≥10 chars), get_task (user-scoped), list_tasks (with status filter + pagination), delete_task (cascade) in `backend/services/task_service.py`
-- [ ] T040 [US2] Implement checkpoint persistence — save current_phase + progress_message + elapsed_seconds to ResearchTask on each stage boundary in `backend/services/task_service.py`
-- [ ] T041 [US2] Implement stage output storage/retrieval — store ResearchPlan/RetrievalResult/KnowledgeSummary/KnowledgeGap in MongoDB, expose via get_stage_outputs(task_id, stage) in `backend/services/task_service.py`
-- [ ] T042 [US2] Implement task concurrency control — enforce max 3 running tasks per user, queue excess in `backend/services/task_service.py`
-- [ ] T043 [US2] Implement Task API endpoints (GET /tasks, POST /tasks, GET /tasks/{id}, DELETE /tasks/{id}) in `backend/api/v1/tasks.py`
-- [ ] T044 [US2] Implement Task control endpoints (POST /tasks/{id}/start, POST /tasks/{id}/pause, POST /tasks/{id}/resume) with status validation in `backend/api/v1/tasks.py`
-- [ ] T045 [US2] Implement Stage outputs endpoint (GET /research/{task_id}/stage-outputs?stage=) in `backend/api/v1/research.py`
-- [ ] T046 [P] [US2] Define TypeScript types for Task, TaskStatus, StageOutput in `frontend/src/types/task.ts`
-- [ ] T047 [P] [US2] Implement Pinia task store with actions (fetchTasks, createTask, startTask, pauseTask, resumeTask, deleteTask) and reactive state in `frontend/src/stores/tasks.ts`
-- [ ] T048 [US2] Create TaskListPage with status filter tabs, task cards (topic + status badge + progress + time), and "新建研究" button in `frontend/src/pages/TaskListPage.vue`
-- [ ] T049 [US2] Create TaskDetailPage with topic header, status timeline, stage output accordion panels (plan/retrieval/summary/gaps/report), and action buttons (start/pause/resume/delete) in `frontend/src/pages/TaskDetailPage.vue`
-- [ ] T050 [US2] Create TaskCard component with topic preview, status tag, progress bar, and elapsed time display in `frontend/src/components/task/TaskCard.vue`
+- [X] T036 [P] [US2] Define MongoDB document schemas for ResearchPlan, RetrievalResult, KnowledgeSummary, KnowledgeGap in `backend/db/mongodb/init.js`
+- [X] T037 [P] [US2] Define research-related Pydantic schemas (ResearchPlanSchema, RetrievalResultSchema, KnowledgeSummarySchema, KnowledgeGapSchema, StageOutputs) in `backend/schemas/research.py` (extend T034)
+- [X] T038 [US2] Implement ResearchTask state machine with transitions: pending→running, running→paused, paused→running, running→completed, running→failed, failed→pending (retry) in `backend/services/task_service.py`
+- [X] T039 [US2] Implement task CRUD operations: create_task (validate topic ≥10 chars), get_task (user-scoped), list_tasks (with status filter + pagination), delete_task (cascade) in `backend/services/task_service.py`
+- [X] T040 [US2] Implement checkpoint persistence — save current_phase + progress_message + elapsed_seconds to ResearchTask on each stage boundary in `backend/services/task_service.py`
+- [X] T041 [US2] Implement stage output storage/retrieval — store ResearchPlan/RetrievalResult/KnowledgeSummary/KnowledgeGap in MongoDB, expose via get_stage_outputs(task_id, stage) in `backend/services/task_service.py`
+- [X] T042 [US2] Implement task concurrency control — enforce max 3 running tasks per user, queue excess in `backend/services/task_service.py`
+- [X] T043 [US2] Implement Task API endpoints (GET /tasks, POST /tasks, GET /tasks/{id}, DELETE /tasks/{id}) in `backend/api/v1/tasks.py`
+- [X] T044 [US2] Implement Task control endpoints (POST /tasks/{id}/start, POST /tasks/{id}/pause, POST /tasks/{id}/resume) with status validation in `backend/api/v1/tasks.py`
+- [X] T045 [US2] Implement Stage outputs endpoint (GET /research/{task_id}/stage-outputs?stage=) in `backend/api/v1/research.py`
+- [X] T046 [P] [US2] Define TypeScript types for Task, TaskStatus, StageOutput in `frontend/src/types/task.ts`
+- [X] T047 [P] [US2] Implement Pinia task store with actions (fetchTasks, createTask, startTask, pauseTask, resumeTask, deleteTask) and reactive state in `frontend/src/stores/tasks.ts`
+- [X] T048 [US2] Create TaskListPage with status filter tabs, task cards (topic + status badge + progress + time), and "新建研究" button in `frontend/src/pages/TaskListPage.vue`
+- [X] T049 [US2] Create TaskDetailPage with topic header, status timeline, stage output accordion panels (plan/retrieval/summary/gaps/report), and action buttons (start/pause/resume/delete) in `frontend/src/pages/TaskDetailPage.vue`
+- [X] T050 [US2] Create TaskCard component with topic preview, status tag, progress bar, and elapsed time display in `frontend/src/components/task/TaskCard.vue`
 
 **Checkpoint**: 用户可创建任务、启动/暂停/恢复/删除任务、查看任务列表和详情。
 任务状态正确流转，中间产物持久保存。此时任务启动后状态会卡在 running（研究的 Agent 尚未实现，Phase 4 补齐）。
 
+**⚠️ 2026-06-16 Revision**: Phase 3 前端页面（TaskListPage/TaskDetailPage/TaskCard）已被 Phase 3b 替代为对话式界面。后端 task_service 和相关模型/API 保留为内部使用，不再直接暴露给用户。
+
 ---
 
-## Phase 4: User Story 1 — 完整深度研究流程 (Priority: P1) 🎯 Core Engine
+## Phase 3b: Conversation Layer — 对话式交互层 (Priority: P0) 🎯 UI Foundation
 
-**Goal**: 用户输入研究主题后，系统自动完成 研究规划→资料检索→知识整合→缺口识别→
-补充检索→报告生成 全流程。研究过程通过 SSE 实时推送进度到前端。
+**Purpose**: 将平台从表单驱动的任务流水线转换为对话式交互模式。用户面对的是 ChatPage，自由输入文字，LLM 自动识别意图。研究过程以对话消息内嵌卡片形式呈现。ResearchTask 实体隐藏在 Conversation/Message 之下。
 
-**Independent Test**: 输入研究主题"大语言模型在医学诊断中的应用"，等待全流程完成，
-验证产出物包含：结构化研究问题列表、研究计划、多源检索结果（≥2个来源）、
-知识整合总结、知识缺口记录、含完整引用列表的最终报告。
+**Why this phase**: 对话交互层是用户体验的入口——它决定了用户如何触发和消费研究能力，必须在 Phase 4'（研究流水线）之前完成。
+
+**Independent Test**: 打开应用 → 输入"你好" → 验证流式文本回复。输入研究主题 → 验证 ResearchPlanCard 渲染 → 点击接受 → 验证流水线卡片逐步展示（注意：Agent 流水线在 Phase 4' 实现，3b 阶段只验证至意图路由和 Plan 生成框架）。
+
+### Database & Models
+
+- [X] T3b-001 [P] Define Conversation ORM model (id, user_id, title, model, context_window_tokens, timestamps) in `backend/models/conversation.py`
+- [X] T3b-002 [P] Define Message ORM model (id, conversation_id, role, content, message_type, parent_message_id, metadata JSONB, token_count, created_at) in `backend/models/conversation.py`
+- [X] T3b-003 Add message_id FK (nullable) to ResearchTask model in `backend/models/task.py`
+- [X] T3b-004 [P] Add conversation_id field to MongoDB collection validators in `backend/db/mongodb/init.js`
+- [X] T3b-005 Create PostgreSQL migration for conversations + messages tables in `backend/db/postgresql/migrations.py`
+
+### Pydantic Schemas
+
+- [X] T3b-006 [P] Define Conversation schemas (ConversationCreate, ConversationRead, ConversationDetailRead, ConversationListResponse, ConversationUpdate) in `backend/schemas/conversation.py`
+- [X] T3b-007 [P] Define Message schemas (MessageRead, SendMessageRequest, PlanActionRequest, MessageListResponse) in `backend/schemas/conversation.py`
+- [X] T3b-008 Define SSE event schemas (SSEEvent with event_type + data payload) in `backend/schemas/conversation.py`
+
+### Services
+
+- [X] T3b-009 Implement ConversationService — CRUD + message pagination + context window token tracking in `backend/services/conversation_service.py`
+- [X] T3b-010 Implement IntentRouter — LLM-based intent classification (chat | research | follow_up) with low-cost model, structured output in `backend/services/intent_router.py`
+- [X] T3b-011 Implement ChatService — orchestration hub: receive message → save user Message → IntentRouter → branch (chat: stream LLM reply; research: create ResearchTask, start pipeline, emit plan; follow_up: inject context, answers) → save assistant Messages → emit done in `backend/services/chat_service.py`
+- [X] T3b-012 Implement plan_confirmation_node — emit plan_card SSE event, await user action (accept/modify/reject) via asyncio.Event in `backend/services/chat_service.py`
+- [X] T3b-013 Implement gap_question_node — emit gap_question SSE event per critical gap, await user response in `backend/services/chat_service.py`
+
+### API Endpoints
+
+- [X] T3b-014 Implement Conversation CRUD endpoints (GET /conversations, POST /conversations, GET /conversations/{id}, PATCH /conversations/{id}, DELETE /conversations/{id}) in `backend/api/v1/conversations.py`
+- [X] T3b-015 Implement POST /conversations/{id}/messages — SSE streaming endpoint for sending messages (intent routing → stream chat chunks or emit research events) in `backend/api/v1/conversations.py`
+- [X] T3b-016 Implement GET /conversations/{id}/messages — paginated message history (cursor-based, before_id) in `backend/api/v1/conversations.py`
+- [X] T3b-017 Implement POST /messages/{id}/plan-action — accept/modify/reject plan in `backend/api/v1/conversations.py`
+- [X] T3b-018 Register conversations router in v1 API router; mark tasks router as deprecated in `backend/api/v1/router.py`
+- [X] T3b-018a Mark all endpoints in tasks.py as deprecated (add `deprecated=True` to route decorators) in `backend/api/v1/tasks.py`
+
+### Frontend: Types & API Client
+
+- [X] T3b-019 Define TypeScript types for Conversation, Message, SSE events in `frontend/src/types/conversation.ts`
+- [X] T3b-020 Implement conversations API client (fetchConversations, createConversation, fetchConversation, sendMessage SSE stream, actOnPlan, deleteConversation) in `frontend/src/api/conversations.ts`
+
+### Frontend: State Management
+
+- [X] T3b-021 Implement Pinia conversations store — conversation list, current messages, streaming state, SSE event handling, message append, plan/gap interaction actions in `frontend/src/stores/conversations.ts`
+
+### Frontend: Chat Components
+
+- [X] T3b-022 [P] Create ConversationSidebar — conversation list (title, last preview, date), "New Chat" button, search filter, delete on right-click, active highlight in `frontend/src/components/chat/ConversationSidebar.vue`
+- [X] T3b-023 [P] Create ChatInputBox — auto-resizing textarea, Enter to send / Shift+Enter newline, send/stop button, disabled during streaming except stop in `frontend/src/components/chat/ChatInputBox.vue`
+- [X] T3b-024 Create MessageBubble — dispatches sub-component by message_type, shows role avatar + timestamp in `frontend/src/components/chat/MessageBubble.vue`
+- [X] T3b-025 [P] Create TextMessage — markdown rendering (marked.js), code blocks with syntax highlighting in `frontend/src/components/chat/TextMessage.vue`
+- [X] T3b-026 [P] Create ResearchPlanCard — question tree + keywords + priority display, [Accept] [Modify] [Reject] buttons (pending_confirmation), accepted/rejected status display in `frontend/src/components/chat/ResearchPlanCard.vue`
+- [X] T3b-027 [P] Create RetrievalCard — source count + type breakdown, expandable retrieved items list in `frontend/src/components/chat/RetrievalCard.vue`
+- [X] T3b-028 [P] Create ReportCard — collapsible sections by heading, clickable inline citation markers [1][2], citation list, export dropdown [Markdown][PDF] in `frontend/src/components/chat/ReportCard.vue`
+- [X] T3b-029 [P] Create GapQuestionCard — gap description + severity badge, [Yes, research this] [Skip] buttons (pending), status display (answered/skipped) in `frontend/src/components/chat/GapQuestionCard.vue`
+- [X] T3b-030 [P] Create ErrorMessage — error text + optional [Retry] button in `frontend/src/components/chat/ErrorMessage.vue`
+- [X] T3b-031 [P] Create StreamingIndicator — animated typing dots during streaming, phase label during research in `frontend/src/components/chat/StreamingIndicator.vue`
+
+### Frontend: Pages & Layout
+
+- [X] T3b-032 Create ChatPage — full chat interface: header (title + model selector), scrollable message list (auto-scroll, virtual scroll for long history), ChatInputBox at bottom, handles ID-based routing in `frontend/src/pages/ChatPage.vue`
+- [X] T3b-033 Create AppLayout shell — sidebar on left (ConversationSidebar + user menu footer), router-view on right for chat/content in `frontend/src/components/layout/AppLayout.vue`
+
+### Frontend: Router & Cleanup
+
+- [X] T3b-034 Rewrite Vue Router — add /chat, /chat/:conversationId, /login, /register, /profile, /knowledge routes; remove /tasks routes; add auth navigation guard in `frontend/src/router/index.ts`
+- [X] T3b-035 DELETE TaskListPage.vue
+- [X] T3b-036 DELETE TaskDetailPage.vue
+- [X] T3b-037 DELETE TaskCard.vue
+- [X] T3b-038 DELETE tasks store (replaced by conversations store)
+- [X] T3b-039 KEEP task.ts types (for internal metadata), add conversation/message types
+
+### Configuration
+
+- [X] T3b-040 Add new settings: chat_model, intent_router_model, max_context_tokens in `backend/core/config.py`
+
+**Checkpoint**: 用户可访问 ChatPage，发送消息获得流式文本回复。发送研究主题 → IntentRouter 识别为 research → Planner 生成 Plan → ResearchPlanCard 渲染 → 用户可 Accept/Modify/Reject。Agent 流水线其他阶段在 Phase 4' 补齐。
+
+---
+
+## Phase 4': User Story 1 — 对话式研究流水线 (Priority: P1) 🎯 Core Engine
+
+**Goal**: 在对话界面中完成完整的深度研究流程——用户发送研究主题后，系统生成研究计划卡片供确认；确认后自动执行 检索→分析→综合→写作，各阶段以对话消息内嵌卡片形式展示；报告渲染在对话中，支持追问。
+
+**Independent Test**: 在 ChatPage 中输入研究主题，接受 Plan，等待全流程完成，验证对话中依次出现 RetrievalCard、GapQuestionCard、ReportCard。报告产出后追问"总结一下核心发现"，验证系统基于报告上下文回答。
 
 ### Agent Implementations
 
@@ -156,32 +238,31 @@ US1 的研究流水线依赖本阶段的 Task CRUD + 状态机 + 中间产物存
 
 ### Research Orchestration
 
-- [ ] T061 [US1] Implement LangGraph research workflow — define graph nodes (plan → retrieve → analyze → [gap? → retrieve → analyze] × 3 → synthesize → write), conditional edges for gap loop in `backend/services/research_service.py`
+- [ ] T061 [US1] Implement LangGraph research workflow — define graph nodes (plan → [plan_confirmation_node ← user action] → retrieve → analyze → [gap_question_node ← user response] → [gap loop ×3] → synthesize → write), conditional edges for gap loop; two user-intervention nodes pause via asyncio.Event (bridge to ChatService SSE), resume on user action in `backend/services/research_service.py`
 - [ ] T062 [US1] Implement workflow checkpointing — save LangGraph state to MongoDB at each node boundary, enable resume from last checkpoint in `backend/services/research_service.py`
-- [ ] T063 [US1] Implement SSE progress emitter — yield phase_change/progress/stage_complete/error/complete events during workflow execution in `backend/services/research_service.py`
+- [ ] T063 [US1] Implement SSE progress emitter — yield phase_change/progress/stage_complete/error/complete events during workflow execution; events bridge through ChatService (T3b-011) to the client SSE connection in `backend/services/research_service.py`
 - [ ] T064 [US1] Implement graceful failure handling — catch agent errors per phase, save partial results, mark task as failed with error_message, preserve completed stages in `backend/services/research_service.py`
 
 ### Research API
 
-- [ ] T065 [US1] Implement SSE streaming endpoint (GET /research/{task_id}/stream) with proper headers and connection management in `backend/api/v1/research.py`
-- [ ] T066 [US1] Wire research workflow launch into POST /tasks/{id}/start — spawn background task, update ResearchTask status, begin SSE emission in `backend/api/v1/tasks.py`
+- [X] ~~T065 [US1] Implement SSE streaming endpoint (GET /research/{task_id}/stream)~~ **SUPERSEDED** by T3b-015 (POST /conversations/{id}/messages SSE)
+- [X] ~~T066 [US1] Wire research workflow launch into POST /tasks/{id}/start~~ **SUPERSEDED** — research is launched by ChatService (T3b-011) when IntentRouter classifies a message as "research"
 
 ### Frontend Research UI
 
-- [ ] T067 [P] [US1] Define TypeScript types for SSE events (PhaseChangeEvent, ProgressEvent, StageCompleteEvent, ErrorEvent, CompleteEvent) in `frontend/src/types/research.ts`
-- [ ] T068 [US1] Implement Pinia research store with SSE connection management, event parsing, and reactive stage progress state in `frontend/src/stores/research.ts`
-- [ ] T069 [US1] Create ResearchPage with SSE-connected real-time progress display — current phase indicator, progress bar, elapsed time, streaming stage output preview in `frontend/src/pages/ResearchPage.vue`
-- [ ] T070 [US1] Create ResearchProgress component — step indicator showing all phases (plan→retrieve→analyze→synthesize→write) with current/complete/pending state in `frontend/src/components/research/ResearchProgress.vue`
-- [ ] T071 [US1] Create StageOutput component — displays phase-specific output (research questions tree for plan, result cards for retrieval, summary text for analyze, gap list for gaps) with source citation links in `frontend/src/components/research/StageOutput.vue`
+- [X] ~~T067 [P] [US1] Define TypeScript types for SSE events~~ **SUPERSEDED** by T3b-019 (SSE types in conversation.ts)
+- [X] ~~T068 [US1] Implement Pinia research store~~ **SUPERSEDED** by T3b-021 (conversations store handles SSE + streaming state)
+- [X] ~~T069 [US1] Create ResearchPage~~ **SUPERSEDED** by T3b-032 (ChatPage)
+- [X] ~~T070 [US1] Create ResearchProgress component~~ **SUPERSEDED** by T3b-031 (StreamingIndicator)
+- [X] ~~T071 [US1] Create StageOutput component~~ **SUPERSEDED** by T3b-024~029 (MessageBubble sub-components)
 
 ### Report Viewing
 
-- [ ] T072 [P] [US1] Define TypeScript types for Report, ReportSection, Citation in `frontend/src/types/research.ts`
-- [ ] T073 [US1] Create ReportPage — renders report with abstract, collapsible sections, inline citation markers [1][2], gap notes section in `frontend/src/pages/ReportPage.vue`
-- [ ] T074 [US1] Create ReportViewer component — Markdown rendering of report sections with clickable citation links in `frontend/src/components/report/ReportViewer.vue`
+- [ ] T072 [P] [US1] Define TypeScript types for Report, ReportSection, Citation (needed by ReportCard) in `frontend/src/types/research.ts`
+- [X] ~~T073 [US1] Create ReportPage~~ **SUPERSEDED** by T3b-028 (ReportCard rendered inline in ChatPage)
+- [X] ~~T074 [US1] Create ReportViewer component~~ **SUPERSEDED** by T3b-028 (ReportCard handles rendering + citation clicks)
 
-**Checkpoint**: 核心研究流程完整可运行。用户创建任务→启动→SSE实时监控→获得含引用的最终报告。
-此时 US2（任务管理）+ US1（研究引擎）组合构成可演示的 MVP。
+**Checkpoint**: 对话式研究流程完整可运行。用户在 ChatPage 发送研究主题→接受 Plan→流水线以对话卡片逐步展示→获得含引用 ReportCard→可追问。Phase 3b（对话层）+ Phase 4'（研究引擎）组合构成可演示的 MVP。
 
 ---
 
@@ -203,17 +284,17 @@ US1 的研究流水线依赖本阶段的 Task CRUD + 状态机 + 中间产物存
 - [ ] T079 [P] [US3] Define TypeScript types for User, LoginRequest, RegisterRequest, TokenPair in `frontend/src/types/user.ts`
 - [ ] T080 [P] [US3] Implement auth API client functions (register, login, refreshToken, logout, getProfile, updateProfile) in `frontend/src/api/auth.ts`
 - [ ] T081 [US3] Implement Pinia auth store — login/logout/register actions, token persistence (localStorage), auto-refresh, user state in `frontend/src/stores/auth.ts`
-- [ ] T082 [US3] Create LoginPage with email/password form, validation errors, and redirect to dashboard on success in `frontend/src/pages/LoginPage.vue`
+- [ ] T082 [US3] Create LoginPage with email/password form, validation errors, and redirect to /chat on success in `frontend/src/pages/LoginPage.vue`
 - [ ] T083 [US3] Create RegisterPage with username/email/password/confirm form, validation, auto-login on success in `frontend/src/pages/RegisterPage.vue`
 - [ ] T084 [US3] Create ProfilePage with editable display_name/institution/email, password change form in `frontend/src/pages/ProfilePage.vue`
-- [ ] T085 [US3] Implement Vue Router navigation guards — redirect unauthenticated users to LoginPage, redirect logged-in users away from login/register in `frontend/src/router/index.ts`
-- [ ] T086 [US3] Create app layout shell with Header (user menu + logo + nav) and Sidebar (task list shortcut, knowledge base shortcut) in `frontend/src/components/layout/AppLayout.vue`
+- [X] ~~T085 [US3] Implement Vue Router navigation guards~~ **SUPERSEDED** by T3b-034 (router rewrite includes auth guard)
+- [X] ~~T086 [US3] Create app layout shell with task list sidebar~~ **SUPERSEDED** by T3b-033 (AppLayout with ConversationSidebar)
 
-**Checkpoint**: 完整用户认证体系就绪。用户注册→登录→创建任务→数据隔离验证通过。
+**Checkpoint**: 完整用户认证体系就绪。用户注册→登录→进入 ChatPage 开始对话→数据隔离验证通过。
 
 ---
 
-## Phase 6: User Story 4 — 引用追溯与来源验证 (Priority: P2)
+## Phase 6': User Story 4 — 引用追溯与来源验证 (Priority: P2, chat-integrated)
 
 **Goal**: 用户点击报告中任意引用标记，可查看原始来源的完整元数据和原文摘录。
 URL失效时保留快照。来源不完整的结果标注可信度。
@@ -231,8 +312,8 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 ### Frontend Citation UI
 
 - [ ] T091 [P] [US4] Implement citation API client functions (getCitationDetail) in `frontend/src/api/research.ts`
-- [ ] T092 [US4] Create CitationPopup component — modal/popper showing full source info (title, authors, date, URL/DOI, source_type tag, credibility badge, excerpt text, "原始链接已失效" warning if applicable) in `frontend/src/components/report/CitationPopup.vue`
-- [ ] T093 [US4] Wire citation click events in ReportViewer — clicking [N] opens CitationPopup with that citation's detail in `frontend/src/components/report/ReportViewer.vue`
+- [ ] T092 [US4] Create CitationPopup component — modal/popper showing full source info (title, authors, date, URL/DOI, source_type tag, credibility badge, excerpt text, "原始链接已失效" warning if applicable) in `frontend/src/components/chat/CitationPopup.vue`
+- [ ] T093 [US4] Wire citation click events in ReportCard — clicking [N] opens CitationPopup with that citation's detail in `frontend/src/components/chat/ReportCard.vue`
 
 **Checkpoint**: 报告中每个引用可点击查看完整来源详情，支持离线快照和可信度评估。
 
@@ -277,7 +358,7 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 
 ---
 
-## Phase 8: User Story 6 — 研究成果管理与导出 (Priority: P3)
+## Phase 8': User Story 6 — 研究成果管理与导出 (Priority: P3, chat-integrated)
 
 **Goal**: 用户可为研究成果添加标签分类，将报告导出为 Markdown 或 PDF 格式。
 导出内容包含完整正文、引用列表和报告元数据。
@@ -291,16 +372,16 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 - [ ] T112 [US6] Implement PDF export — convert Markdown to PDF with academic formatting (heading hierarchy, page headers/footers, citation style) using WeasyPrint or similar in `backend/tools/exporter.py`
 - [ ] T113 [US6] Implement report export endpoint (GET /reports/{task_id}/export?format=markdown|pdf) with proper Content-Type and Content-Disposition headers in `backend/api/v1/reports.py`
 - [ ] T114 [US6] Add tags field (JSON array) to ResearchTask model and implement tag CRUD (add/remove/list) in `backend/services/task_service.py`
-- [ ] T115 [US6] Implement tag filter on task list endpoint — filter by one or more tags in `backend/api/v1/tasks.py`
+- [ ] T115 [US6] Implement tag filter on task list endpoint — filter by one or more tags (internal, ResearchTask tags used by conversation metadata) in `backend/api/v1/tasks.py`
 
 ### Frontend Result Management UI
 
-- [ ] T116 [P] [US6] Implement tag management in Pinia task store (addTag, removeTag, filterByTag) in `frontend/src/stores/tasks.ts`
-- [ ] T117 [US6] Add tag input component to TaskDetailPage — add/remove tags as chips, autocomplete from existing tags in `frontend/src/pages/TaskDetailPage.vue`
-- [ ] T118 [US6] Add export buttons to ReportPage — "导出 Markdown" and "导出 PDF" buttons, trigger download with loading state in `frontend/src/pages/ReportPage.vue`
-- [ ] T119 [US6] Add tag filter chips to TaskListPage — clickable tag chips to filter task list, "全部" to clear filter in `frontend/src/pages/TaskListPage.vue`
+- [X] ~~T116 [P] [US6] Implement tag management in Pinia task store~~ **SUPERSEDED** — task store deleted (T3b-038); tag actions move to conversations store
+- [X] ~~T117 [US6] Add tag input component to TaskDetailPage~~ **SUPERSEDED** — TaskDetailPage deleted (T3b-036); tag management via conversation context menu
+- [ ] T118 [US6] Add export buttons to ReportCard — "导出 Markdown" and "导出 PDF" buttons, trigger download with loading state in `frontend/src/components/chat/ReportCard.vue`
+- [X] ~~T119 [US6] Add tag filter chips to TaskListPage~~ **SUPERSEDED** — TaskListPage deleted (T3b-035); tag filter on ConversationSidebar
 
-**Checkpoint**: 研究成果完整管理闭环。打标签→按标签筛选→导出 Markdown/PDF 均可使用。
+**Checkpoint**: 研究成果完整管理闭环。在 ReportCard 点击导出 Markdown/PDF。标签管理通过会话右键菜单操作。
 
 ---
 
@@ -308,12 +389,12 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T120 [P] Create DashboardPage — overview cards (total tasks, running count, completed count, knowledge base doc count), recent tasks list, quick-start new research button in `frontend/src/pages/DashboardPage.vue`
-- [ ] T121 [P] Add loading skeletons to TaskListPage, TaskDetailPage, KnowledgeBasePage in respective page components
+- [ ] T120 [P] Create DashboardPage — overview cards (total conversations, active research count, completed count, knowledge base doc count), recent conversations list, quick-start "New Chat" button in `frontend/src/pages/DashboardPage.vue`
+- [ ] T121 [P] Add loading skeletons to ChatPage, KnowledgeBasePage in respective page components
 - [ ] T122 [P] Add error boundary / toast notification system for API errors across all pages in `frontend/src/components/common/ToastNotification.vue`
 - [ ] T123 Implement task execution timeout — auto-mark task as failed after 2 hours with descriptive error message in `backend/services/task_service.py`
 - [ ] T124 Add health check endpoint (GET /health) returning status of PostgreSQL, MongoDB, Elasticsearch connections in `backend/main.py`
-- [ ] T125 Run through quickstart.md validation — verify Docker Compose fresh start, create user, create task, run research, view report, export
+- [ ] T125 Run through quickstart.md validation — verify Docker Compose fresh start, create user, open ChatPage, send research message, accept plan, view report in chat, export
 - [ ] T126 [P] Add response compression middleware (gzip) to FastAPI in `backend/main.py`
 - [ ] T127 [P] Add API rate limiting for auth endpoints (register: 5/min, login: 10/min per IP) in `backend/api/v1/auth.py`
 - [ ] T128 Security hardening — verify all user-scoped queries filter by user_id, confirm no sensitive data in error responses, audit log masking
@@ -341,13 +422,20 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 ```text
 Phase 2: Foundational
     │
-    ├── Phase 3: US2 (Task Management) ── BLOCKS ── Phase 4: US1 (Research Pipeline)
-    │                                                    │
-    ├── Phase 5: US3 (Auth)                              ├── Phase 6: US4 (Citations)
-    │                                                    │
-    ├── Phase 7: US5 (Knowledge Base)                    └── Phase 8: US6 (Export)
-    │
-    └── Phase 9: Polish (after all selected stories)
+    ├── Phase 3: US2 (Task Management) — internal, UI superseded
+    │       │
+    │       └── Phase 3b: Conversation Layer (NEW) ── BLOCKS ALL
+    │               │
+    │               ├── Phase 4': US1 (Chat-Adapted Research Pipeline)
+    │               │       │
+    │               │       ├── Phase 6': US4 (Citations, chat-integrated)
+    │               │       └── Phase 8': US6 (Export, chat-integrated)
+    │               │
+    │               ├── Phase 5: US3 (Auth) — parallel with 4'
+    │               │
+    │               ├── Phase 7: US5 (Knowledge Base) — parallel with all
+    │               │
+    │               └── Phase 9': Polish (after all selected stories)
 ```
 
 ### Within Each Phase

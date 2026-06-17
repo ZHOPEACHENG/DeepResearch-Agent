@@ -35,6 +35,9 @@ LLM_API_KEY=your-api-key-here
 LLM_API_BASE=https://api.openai.com/v1
 LLM_MODEL=gpt-4o
 LLM_EMBED_MODEL=text-embedding-3-small
+CHAT_MODEL=gpt-4o
+INTENT_ROUTER_MODEL=gpt-4o
+MAX_CONTEXT_TOKENS=128000
 
 # 搜索 API 配置（必填）
 SEARCH_API_KEY=your-search-api-key
@@ -104,30 +107,32 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
   -d '{"username": "researcher", "email": "researcher@example.com", "password": "secure_password_123"}'
 ```
 
-### 2. 创建研究任务
+### 2. 开始对话
+
+打开 http://localhost:3000/chat，在输入框中自由输入文字。发送消息后，系统自动创建会话。
+
+或通过 API：
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/tasks \
+# 创建新会话
+curl -X POST http://localhost:8000/api/v1/conversations \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json"
+
+# 发送消息（SSE 流式响应）
+curl -N http://localhost:8000/api/v1/conversations/<conversation_id>/messages \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"topic": "大语言模型在医学诊断中的应用"}'
+  -d '{"content": "大语言模型在医学诊断中的应用"}'
 ```
 
-### 3. 启动研究
+### 3. 发起深度研究
 
-```bash
-curl -X POST http://localhost:8000/api/v1/tasks/<task_id>/start \
-  -H "Authorization: Bearer <access_token>"
-```
+在对话中发送研究主题，系统自动识别为"研究"意图，生成研究计划卡片。点击"接受"后，研究流水线启动。
 
 ### 4. 监控研究进度
 
-在任务详情页查看实时进度（SSE 流），或通过 API：
-
-```bash
-curl -N http://localhost:8000/api/v1/research/<task_id>/stream \
-  -H "Authorization: Bearer <access_token>"
-```
+在对话界面中查看实时进度（研究卡片逐步渲染），或通过 API 发送消息获取 SSE 流式响应。
 
 ### 5. 查看研究报告
 
@@ -196,7 +201,7 @@ sudo sysctl -w vm.max_map_count=262144
 echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
 ```
 
-**Q: 研究任务一直处于 pending 状态**
+**Q: 研究计划生成后流水线不继续**
 
 检查：
 1. `.env` 中的 `LLM_API_KEY` 是否已配置

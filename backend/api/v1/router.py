@@ -12,14 +12,22 @@ Endpoints are grouped by OpenAPI tag:
 
 from fastapi import APIRouter
 
-from backend.api.v1 import auth, users, tasks, research, reports, knowledge
+from backend.api.v1 import auth, conversations, knowledge, reports, research, tasks, users
+from backend.core.config import settings
 
 router = APIRouter(prefix="/api/v1")
 
 # Include sub-routers
 router.include_router(auth.router, tags=["Auth"])
 router.include_router(users.router, tags=["Users"])
-router.include_router(tasks.router, tags=["Tasks"])
+router.include_router(conversations.router, tags=["Conversations"])
+router.include_router(tasks.router, tags=["Tasks"], deprecated=True)
 router.include_router(research.router, tags=["Research"])
 router.include_router(reports.router, tags=["Reports"])
 router.include_router(knowledge.router, tags=["Knowledge"])
+
+
+@router.get("/models")
+async def get_available_models():
+    """Return the list of models available for user selection in the chat UI."""
+    return {"models": settings.available_models}

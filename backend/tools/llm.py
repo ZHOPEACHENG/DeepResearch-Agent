@@ -11,7 +11,9 @@ Spec FR-016a: up to 3 exponential-backoff retries (1s/2s/4s) on LLM failure.
 """
 
 import asyncio
+import json
 from abc import ABC, abstractmethod
+from typing import AsyncIterator
 
 import httpx
 
@@ -30,6 +32,7 @@ class LLMProvider(ABC):
         messages: list[dict[str, str]],
         temperature: float = 0.3,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> str:
         """
         Send a chat completion request.
@@ -38,11 +41,27 @@ class LLMProvider(ABC):
             messages: List of {"role": "...", "content": "..."} dicts.
             temperature: Sampling temperature (0.0 = deterministic).
             max_tokens: Maximum tokens in the response.
+            model: Override the default model for this call.
 
         Returns:
             The model's text response.
         """
         ...
+
+    @abstractmethod
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        model: str | None = None,
+    ) -> AsyncIterator[str]:
+        """
+        Stream a chat completion response token-by-token via SSE.
+
+        Yields content tokens as they arrive from the API.
+        """
+        yield ""  # pragma: no cover — abstract, never executed
 
     @abstractmethod
     async def embed(self, texts: list[str]) -> list[list[float]]:
@@ -91,6 +110,7 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[dict[str, str]],
         temperature: float = 0.3,
         max_tokens: int = 4096,
+        model: str | None = None,
     ) -> str:
         """Send a chat completion via OpenAI-compatible API with retry."""
         url = f"{self.api_base}/chat/completions"
@@ -98,8 +118,9 @@ class OpenAICompatibleProvider(LLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        effective_model = model or self.model
         body = {
-            "model": self.model,
+            "model": effective_model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -114,7 +135,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 content = data["choices"][0]["message"]["content"]
                 logger.info(
                     "llm_chat_complete",
-                    model=self.model,
+                    model=effective_model,
                     tokens_used=data.get("usage", {}).get("total_tokens"),
                 )
                 return content
@@ -123,7 +144,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     wait = self._BACKOFF_SEQUENCE[attempt]
                     logger.warning(
                         "llm_chat_retry",
-                        model=self.model,
+                        model=effective_model,
                         attempt=attempt + 1,
                         wait=wait,
                         error=str(e)[:200],
@@ -132,8 +153,76 @@ class OpenAICompatibleProvider(LLMProvider):
                     continue
                 logger.error(
                     "llm_chat_failed",
-                    model=self.model,
+                    model=effective_model,
                     url=url,
+                    attempts=self._MAX_RETRIES,
+                    error=str(e)[:500],
+                )
+                raise
+
+    # ── Chat Stream ────────────────────────────────────────────────────
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        model: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream chat tokens via OpenAI-compatible SSE endpoint."""
+        url = f"{self.api_base}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        effective_model = model or self.model
+        body = {
+            "model": effective_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with client.stream("POST", url, headers=headers, json=body) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                delta = data["choices"][0].get("delta", {})
+                                token = delta.get("content", "")
+                                if token:
+                                    yield token
+                            except (json.JSONDecodeError, KeyError, IndexError):
+                                continue
+                logger.info(
+                    "llm_chat_stream_complete",
+                    model=effective_model,
+                )
+                return
+            except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                if attempt < self._MAX_RETRIES - 1:
+                    wait = self._BACKOFF_SEQUENCE[attempt]
+                    logger.warning(
+                        "llm_chat_stream_retry",
+                        model=effective_model,
+                        attempt=attempt + 1,
+                        wait=wait,
+                        error=str(e)[:200],
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                logger.error(
+                    "llm_chat_stream_failed",
+                    model=effective_model,
                     attempts=self._MAX_RETRIES,
                     error=str(e)[:500],
                 )

@@ -15,8 +15,10 @@ tags:
     description: 用户认证
   - name: Users
     description: 用户资料管理
+  - name: Conversations
+    description: 对话式研究交互（核心交互入口）
   - name: Tasks
-    description: 研究任务管理
+    description: 研究任务管理（内部保留，Phase 3b 起 deprecated）
   - name: Research
     description: 研究流程
   - name: Reports
@@ -201,7 +203,218 @@ paths:
           description: 旧密码错误
 
   # ═══════════════════════════════════════════════════════════════════
-  # Tasks
+  # ═══════════════════════════════════════════════════════════════════
+  # Conversations (Phase 3b — primary interaction entrypoint)
+  # ═══════════════════════════════════════════════════════════════════
+  /conversations:
+    get:
+      tags: [Conversations]
+      summary: 获取会话列表
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 50
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: 按标题搜索
+      responses:
+        "200":
+          description: 会话列表（按 updated_at 倒序）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationListResponse"
+    post:
+      tags: [Conversations]
+      summary: 创建新会话
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 200
+                model:
+                  type: string
+      responses:
+        "201":
+          description: 会话创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationDetail"
+
+  /conversations/{conversation_id}:
+    get:
+      tags: [Conversations]
+      summary: 获取会话详情（含消息列表）
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: message_page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: message_page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: 会话详情 + 分页消息列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationDetail"
+        "404":
+          description: 会话不存在
+    patch:
+      tags: [Conversations]
+      summary: 更新会话标题
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        "200":
+          description: 标题已更新
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationDetail"
+    delete:
+      tags: [Conversations]
+      summary: 删除会话（级联删除消息 + 解除任务关联）
+      responses:
+        "204":
+          description: 删除成功
+        "404":
+          description: 会话不存在
+
+  /conversations/{conversation_id}/messages:
+    get:
+      tags: [Conversations]
+      summary: 获取消息历史（光标分页）
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: before_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: 在此消息之前加载更早的消息
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: 消息列表（按时间正序）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageListResponse"
+    post:
+      tags: [Conversations]
+      summary: 发送消息并接收 SSE 流式响应
+      description: |
+        核心交互端点。系统执行意图分类 → 分支处理：
+        - chat: 流式返回 LLM 文本回复
+        - research: 生成研究计划 → emit plan_generated → 等待用户确认
+        - follow_up: 基于会话上下文 + 研究报告回答
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  minLength: 1
+                  maxLength: 10000
+                parent_message_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: SSE 事件流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "404":
+          description: 会话不存在
+
+  /messages/{message_id}/plan-action:
+    post:
+      tags: [Conversations]
+      summary: 对研究计划执行操作
+      parameters:
+        - name: message_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: ResearchPlanCard 的 message ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [accept, modify, reject]
+                modifications:
+                  type: string
+                  description: 修改意见（仅 action=modify 时有效）
+      responses:
+        "200":
+          description: 操作已处理，后续 SSE 事件将通过原始消息的 SSE 连接持续推送
+        "404":
+          description: 消息不存在或类型不是 plan_card
+        "409":
+          description: 计划已处理（不可重复操作）
+
+  # Tasks (Phase 3 — deprecated, kept for internal use)
   # ═══════════════════════════════════════════════════════════════════
   /tasks:
     get:
@@ -664,6 +877,119 @@ components:
       bearerFormat: JWT
 
   schemas:
+    # ── Conversation ──────────────────────────────────────────────
+    ConversationSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        model:
+          type: string
+        messageCount:
+          type: integer
+        lastMessagePreview:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ConversationListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationSummary"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        conversationId:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [user, assistant, system, tool]
+        content:
+          type: string
+        messageType:
+          type: string
+          enum: [text, plan_card, retrieval_card, report_card, citation, error, gap_question]
+        parentMessageId:
+          type: string
+          format: uuid
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+          description: 按 messageType 携带不同负载
+        tokenCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    ConversationDetail:
+      allOf:
+        - $ref: "#/components/schemas/ConversationSummary"
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: "#/components/schemas/Message"
+
+    MessageListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Message"
+        hasMore:
+          type: boolean
+          description: 是否还有更早的消息
+
+    SSEEvent:
+      type: object
+      properties:
+        event:
+          type: string
+          enum:
+            - message_created
+            - chat_chunk
+            - intent_classified
+            - plan_generated
+            - retrieval_started
+            - retrieval_progress
+            - retrieval_complete
+            - analysis_complete
+            - gap_question
+            - report_chunk
+            - report_complete
+            - error
+            - done
+        data:
+          type: object
+          additionalProperties: true
+
+    # ── Existing ──────────────────────────────────────────────────
     Error:
       type: object
       properties:

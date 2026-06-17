@@ -1,6 +1,6 @@
 # Implementation Plan: 深度研究平台 (Deep Research Platform)
 
-**Branch**: `001-deep-research-platform` | **Date**: 2026-06-04 | **Spec**: [spec.md](./spec.md)
+**Branch**: `001-deep-research-platform` | **Date**: 2026-06-16 (revised) | **Spec**: [spec.md](./spec.md)
 
 **Input**: Feature specification from `/specs/001-deep-research-platform/spec.md`
 
@@ -145,12 +145,14 @@ backend/
 ├── models/
 │   ├── __init__.py
 │   ├── user.py                # User ORM 模型
-│   ├── task.py                # ResearchTask ORM 模型
+│   ├── conversation.py        # Conversation + Message ORM 模型（对话交互层）
+│   ├── task.py                # ResearchTask ORM 模型（内部实体）
 │   ├── report.py              # ResearchReport ORM 模型
 │   └── document.py            # Document ORM 模型
 ├── schemas/
 │   ├── __init__.py
 │   ├── user.py                # Pydantic 请求/响应 schema
+│   ├── conversation.py        # Conversation/Message/SSE 事件 schemas
 │   ├── task.py
 │   ├── research.py            # 研究流程相关 schema
 │   └── document.py
@@ -162,7 +164,8 @@ backend/
 │       ├── router.py          # v1 路由汇总
 │       ├── auth.py            # 注册、登录、登出
 │       ├── users.py           # 用户资料管理
-│       ├── tasks.py           # 研究任务 CRUD + 状态管理
+│       ├── conversations.py   # 会话管理 + 消息发送（SSE 流式响应）
+│       ├── tasks.py           # 研究任务 CRUD（内部保留，已 deprecated）
 │       ├── research.py        # 研究流程 WebSocket/SSE 端点
 │       ├── reports.py         # 报告查看 + 导出
 │       └── knowledge.py       # 知识库上传、搜索、问答
@@ -177,7 +180,10 @@ backend/
 ├── services/
 │   ├── __init__.py
 │   ├── auth_service.py        # 认证业务逻辑
-│   ├── task_service.py        # 任务管理业务逻辑
+│   ├── conversation_service.py # 会话 CRUD + 上下文窗口管理
+│   ├── intent_router.py       # LLM 意图分类（chat/research/follow_up）
+│   ├── chat_service.py        # 对话编排中枢（意图路由→聊天/流水线→SSE→写Message）
+│   ├── task_service.py        # 任务管理业务逻辑（内部使用）
 │   ├── research_service.py    # 研究编排（LangGraph workflow）
 │   ├── report_service.py      # 报告生成与导出
 │   └── knowledge_service.py   # 知识库管理
@@ -207,33 +213,32 @@ frontend/
 │   │   └── index.ts           # Vue Router 路由配置
 │   ├── stores/
 │   │   ├── auth.ts            # Pinia 认证状态
-│   │   ├── tasks.ts           # 研究任务状态
+│   │   ├── conversations.ts   # 会话 + 消息 + SSE 流式状态
 │   │   └── knowledge.ts       # 知识库状态
 │   ├── api/
 │   │   ├── client.ts          # Axios 实例 + 拦截器
 │   │   ├── auth.ts            # 认证 API 调用
-│   │   ├── tasks.ts           # 任务 API 调用
+│   │   ├── conversations.ts   # 会话/消息 API + SSE ReadableStream 解析
 │   │   ├── research.ts        # 研究流程 API 调用
 │   │   └── knowledge.ts       # 知识库 API 调用
 │   ├── components/
-│   │   ├── layout/            # 布局组件（Header, Sidebar, Layout）
-│   │   ├── task/              # 任务相关组件（TaskCard, TaskList, TaskDetail）
-│   │   ├── research/          # 研究流程组件（ResearchProgress, StageOutput）
-│   │   ├── report/            # 报告组件（ReportViewer, CitationPopup）
+│   │   ├── layout/            # 布局组件（AppLayout, Header）
+│   │   ├── chat/              # 对话组件（MessageBubble, ChatInputBox, ConversationSidebar,
+│   │   │                      #   TextMessage, ResearchPlanCard, RetrievalCard, ReportCard,
+│   │   │                      #   GapQuestionCard, ErrorMessage, StreamingIndicator）
+│   │   ├── research/          # 研究流程组件（CitationPopup 等）
+│   │   ├── report/            # 报告组件（ExportButton）
 │   │   └── common/            # 通用组件（FileUpload, SearchBar）
 │   ├── pages/
+│   │   ├── ChatPage.vue       # 主对话页面（会话消息列表 + 输入框）
 │   │   ├── LoginPage.vue
 │   │   ├── RegisterPage.vue
-│   │   ├── DashboardPage.vue  # 用户主页/仪表盘
-│   │   ├── TaskListPage.vue
-│   │   ├── TaskDetailPage.vue
-│   │   ├── ResearchPage.vue   # 研究流程监控页
-│   │   ├── ReportPage.vue     # 报告查看页
 │   │   ├── KnowledgeBasePage.vue
 │   │   └── ProfilePage.vue
 │   └── types/
 │       ├── user.ts            # TypeScript 类型定义
-│       ├── task.ts
+│       ├── conversation.ts    # Conversation/Message/SSE 事件类型
+│       ├── task.ts            # Task 类型（内部 metadata）
 │       ├── research.ts
 │       └── document.ts
 
