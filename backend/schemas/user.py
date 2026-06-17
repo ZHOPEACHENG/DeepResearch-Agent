@@ -74,6 +74,11 @@ class ChangePasswordRequest(BaseModel):
         return self
 
 
+class RefreshRequest(BaseModel):
+    """Request body for token refresh."""
+    refresh_token: str = Field(..., description="The current refresh token")
+
+
 # ── Response Schemas ─────────────────────────────────────────────────
 
 class TokenPair(BaseModel):

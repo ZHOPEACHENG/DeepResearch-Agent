@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN DEFAULT TRUE,
     locked_until TIMESTAMP WITH TIME ZONE,
     login_attempts INTEGER DEFAULT 0,
+    token_version INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -150,6 +151,10 @@ ALTER TABLE research_tasks
 -- Message model tracking (per-message model selection)
 ALTER TABLE messages
     ADD COLUMN IF NOT EXISTS model VARCHAR(100);
+
+-- Token version for refresh token rotation (Phase 5 security hardening)
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0;
 """
 
 DROP_TABLES_SQL = """

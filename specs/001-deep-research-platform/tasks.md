@@ -274,19 +274,19 @@ US1 的研究流水线依赖本阶段的 Task CRUD + 状态机 + 中间产物存
 
 ### Backend Auth
 
-- [ ] T075 [US3] Implement auth service: register (validate unique username/email, hash password, create user), login (verify password, check lockout, generate token pair, reset attempts), refresh token, logout in `backend/services/auth_service.py`
-- [ ] T076 [US3] Implement account lockout — track login_attempts, lock for 15 min after 3 consecutive failures in `backend/services/auth_service.py`
-- [ ] T077 [US3] Implement Auth API endpoints (POST /auth/register, POST /auth/login, POST /auth/refresh, POST /auth/logout) in `backend/api/v1/auth.py`
-- [ ] T078 [US3] Implement User profile endpoints (GET /users/me, PATCH /users/me, PUT /users/me/password) with old password verification in `backend/api/v1/users.py`
+- [X] T075 [US3] Implement auth service: register (validate unique username/email, hash password, create user), login (verify password, check lockout, generate token pair, reset attempts), refresh token, logout in `backend/services/auth_service.py`
+- [X] T076 [US3] Implement account lockout — track login_attempts, lock for 15 min after 3 consecutive failures in `backend/services/auth_service.py`
+- [X] T077 [US3] Implement Auth API endpoints (POST /auth/register, POST /auth/login, POST /auth/refresh, POST /auth/logout) in `backend/api/v1/auth.py`
+- [X] T078 [US3] Implement User profile endpoints (GET /users/me, PATCH /users/me, PUT /users/me/password) with old password verification in `backend/api/v1/users.py`
 
 ### Frontend Auth
 
-- [ ] T079 [P] [US3] Define TypeScript types for User, LoginRequest, RegisterRequest, TokenPair in `frontend/src/types/user.ts`
-- [ ] T080 [P] [US3] Implement auth API client functions (register, login, refreshToken, logout, getProfile, updateProfile) in `frontend/src/api/auth.ts`
-- [ ] T081 [US3] Implement Pinia auth store — login/logout/register actions, token persistence (localStorage), auto-refresh, user state in `frontend/src/stores/auth.ts`
-- [ ] T082 [US3] Create LoginPage with email/password form, validation errors, and redirect to /chat on success in `frontend/src/pages/LoginPage.vue`
-- [ ] T083 [US3] Create RegisterPage with username/email/password/confirm form, validation, auto-login on success in `frontend/src/pages/RegisterPage.vue`
-- [ ] T084 [US3] Create ProfilePage with editable display_name/institution/email, password change form in `frontend/src/pages/ProfilePage.vue`
+- [X] T079 [P] [US3] Define TypeScript types for User, LoginRequest, RegisterRequest, TokenPair in `frontend/src/types/user.ts`
+- [X] T080 [P] [US3] Implement auth API client functions (register, login, refreshToken, logout, getProfile, updateProfile) in `frontend/src/api/auth.ts`
+- [X] T081 [US3] Implement Pinia auth store — login/logout/register actions, token persistence (localStorage), auto-refresh, user state in `frontend/src/stores/auth.ts`
+- [X] T082 [US3] Create LoginPage with email/password form, validation errors, and redirect to /chat on success in `frontend/src/pages/LoginPage.vue`
+- [X] T083 [US3] Create RegisterPage with username/email/password/confirm form, validation, auto-login on success in `frontend/src/pages/RegisterPage.vue`
+- [X] T084 [US3] Create ProfilePage with editable display_name/institution/email, password change form in `frontend/src/pages/ProfilePage.vue`
 - [X] ~~T085 [US3] Implement Vue Router navigation guards~~ **SUPERSEDED** by T3b-034 (router rewrite includes auth guard)
 - [X] ~~T086 [US3] Create app layout shell with task list sidebar~~ **SUPERSEDED** by T3b-033 (AppLayout with ConversationSidebar)
 

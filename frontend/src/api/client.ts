@@ -9,16 +9,16 @@
 
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios'
 
-// ── Token Management ────────────────────────────────────────────────
+// ── Token Storage Keys (exported for use across the app) ──────────────
 
-const ACCESS_TOKEN_KEY = 'access_token'
-const REFRESH_TOKEN_KEY = 'refresh_token'
+export const ACCESS_TOKEN_KEY = 'access_token'
+export const REFRESH_TOKEN_KEY = 'refresh_token'
 
-function getAccessToken(): string | null {
+export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_TOKEN_KEY)
 }
 
-function getRefreshToken(): string | null {
+export function getRefreshToken(): string | null {
   return localStorage.getItem(REFRESH_TOKEN_KEY)
 }
 
@@ -30,6 +30,21 @@ export function setTokens(accessToken: string, refreshToken: string): void {
 export function clearTokens(): void {
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(REFRESH_TOKEN_KEY)
+}
+
+// ── Cross-tab token sync ──────────────────────────────────────────────
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === ACCESS_TOKEN_KEY && !e.newValue) {
+      // Token was cleared in another tab — redirect to login
+      window.location.href = '/login'
+    }
+    if (e.key === REFRESH_TOKEN_KEY && !e.newValue) {
+      clearTokens()
+      window.location.href = '/login'
+    }
+  })
 }
 
 // ── Axios Instance ──────────────────────────────────────────────────
@@ -104,6 +119,8 @@ apiClient.interceptors.response.use(
 
     const refreshToken = getRefreshToken()
     if (!refreshToken) {
+      // No refresh token available — drain queue and reject all
+      processQueue(new Error('会话已过期，请重新登录'), null)
       clearTokens()
       isRefreshing = false
       return Promise.reject(error)
@@ -126,7 +143,7 @@ apiClient.interceptors.response.use(
     } catch (refreshError) {
       processQueue(refreshError, null)
       clearTokens()
-      // Redirect to login — will be handled by router guard
+      // Redirect to login — use router navigation if available, fallback to hard redirect
       window.location.href = '/login'
       return Promise.reject(refreshError)
     } finally {
@@ -146,13 +163,13 @@ export interface ApiError {
 export function extractApiError(error: unknown): ApiError {
   if (axios.isAxiosError(error) && error.response?.data) {
     return {
-      detail: error.response.data.detail || 'An unexpected error occurred',
+      detail: error.response.data.detail || '发生未知错误，请稍后重试',
       statusCode: error.response.status,
       type: error.response.data.type,
     }
   }
   return {
-    detail: 'Network error — please check your connection',
+    detail: '网络连接失败，请检查网络后重试',
     statusCode: 0,
   }
 }

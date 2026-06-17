@@ -1,9 +1,23 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type {
-  ConversationSummary, MessageDetail, SSEEvent,
+  ConversationSummary, MessageDetail, SSEEvent, PlanAction,
 } from '@/types/conversation'
 import * as convApi from '@/api/conversations'
+import { extractApiError } from '@/api/client'
+
+/** UUID v4 fallback for environments without crypto.randomUUID() */
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  // Fallback for non-secure contexts
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
 
 export const useConversationStore = defineStore('conversations', () => {
   const conversations = ref<ConversationSummary[]>([])
@@ -15,7 +29,7 @@ export const useConversationStore = defineStore('conversations', () => {
   const streamingContent = ref('')
   const streamingIntent = ref<string | null>(null)
   const selectedModel = ref<string>('gpt-4o')
-  const availableModels = ref<string[]>(['gpt-4o', 'gpt-4o-mini', 'claude-sonnet-4-6', 'claude-opus-4-8'])
+  const availableModels = ref<string[]>([])
   const total = ref(0)
   const page = ref(1)
 
@@ -27,13 +41,15 @@ export const useConversationStore = defineStore('conversations', () => {
 
   async function fetchConversations(p?: number) {
     loading.value = true
+    error.value = null
     try {
       const data = await convApi.fetchConversations(p ?? page.value)
       conversations.value = data.items
       total.value = data.total
       page.value = data.page
-    } catch (e: any) {
-      error.value = e?.response?.data?.detail || 'Failed to load conversations'
+    } catch (e: unknown) {
+      const apiErr = extractApiError(e)
+      error.value = apiErr.detail
       console.error('[store] fetchConversations failed:', e)
     } finally {
       loading.value = false
@@ -41,12 +57,14 @@ export const useConversationStore = defineStore('conversations', () => {
   }
 
   async function createConversation(title?: string) {
+    error.value = null
     try {
-      const detail = await convApi.createConversation(title)
+      const detail = await convApi.createConversation(title, selectedModel.value)
       conversations.value.unshift(detail)
       return detail
-    } catch (e: any) {
-      error.value = e?.response?.data?.detail || 'Failed to create conversation'
+    } catch (e: unknown) {
+      const apiErr = extractApiError(e)
+      error.value = apiErr.detail
       console.error('[store] createConversation failed:', e)
       throw e
     }
@@ -54,6 +72,7 @@ export const useConversationStore = defineStore('conversations', () => {
 
   async function fetchConversation(convId: string) {
     loading.value = true
+    error.value = null
     try {
       const [conv, msgResult] = await Promise.all([
         convApi.fetchConversation(convId),
@@ -61,8 +80,9 @@ export const useConversationStore = defineStore('conversations', () => {
       ])
       currentConversation.value = conv
       messages.value = msgResult.items
-    } catch (e: any) {
-      error.value = e?.response?.data?.detail || 'Failed to load conversation'
+    } catch (e: unknown) {
+      const apiErr = extractApiError(e)
+      error.value = apiErr.detail
       console.error('[store] fetchConversation failed:', e)
     } finally {
       loading.value = false
@@ -70,6 +90,10 @@ export const useConversationStore = defineStore('conversations', () => {
   }
 
   function sendMessage(convId: string, content: string, parentMessageId?: string) {
+    // Abort any existing stream before starting a new one
+    _abortController?.abort()
+    _abortController = null
+
     isStreaming.value = true
     streamingContent.value = ''
     streamingIntent.value = null
@@ -81,15 +105,18 @@ export const useConversationStore = defineStore('conversations', () => {
         switch (event.event) {
           case 'message_created':
             break
+
           case 'chat_chunk':
             streamingContent.value += (event.data.content as string) || ''
             break
+
           case 'intent_classified':
             streamingIntent.value = event.data.intent as string
             break
+
           case 'plan_generated':
             messages.value.push({
-              id: event.data.messageId as string,
+              id: (event.data.messageId as string) || generateUUID(),
               conversationId: convId,
               role: 'assistant',
               content: '',
@@ -101,9 +128,12 @@ export const useConversationStore = defineStore('conversations', () => {
               createdAt: new Date().toISOString(),
             })
             break
+
+          // report_complete is a Phase 4' event (not yet emitted by backend).
+          // Handler present for forward compatibility.
           case 'report_complete':
             messages.value.push({
-              id: event.data.messageId as string,
+              id: (event.data.messageId as string) || generateUUID(),
               conversationId: convId,
               role: 'assistant',
               content: '',
@@ -115,14 +145,17 @@ export const useConversationStore = defineStore('conversations', () => {
               createdAt: new Date().toISOString(),
             })
             break
+
           case 'error':
-            error.value = event.data.message as string || 'An error occurred'
+            error.value = (event.data.message as string) || '发生未知错误'
+            isStreaming.value = false
             console.error('[store] SSE error event:', event.data)
             break
+
           case 'done':
             if (streamingContent.value) {
               messages.value.push({
-                id: crypto.randomUUID(),
+                id: (event.data.messageId as string) || generateUUID(),
                 conversationId: convId,
                 role: 'assistant',
                 content: streamingContent.value,
@@ -136,16 +169,26 @@ export const useConversationStore = defineStore('conversations', () => {
               streamingContent.value = ''
             }
             break
+
+          default:
+            // Future SSE event types (retrieval_started, analysis_complete, etc.)
+            // Log for observability; no UI action needed yet.
+            if (import.meta.env.DEV) {
+              console.debug('[store] unhandled SSE event:', event.event, event.data)
+            }
+            break
         }
       },
       (err: Error) => {
-        error.value = err.message
+        error.value = err.message || '流式传输失败'
         isStreaming.value = false
+        streamingContent.value = ''
         console.error('[store] sendMessage stream error:', err)
       },
       () => {
         isStreaming.value = false
         streamingContent.value = ''
+        // Update the conversation list to reflect the new message
         fetchConversations()
       },
     )
@@ -153,20 +196,37 @@ export const useConversationStore = defineStore('conversations', () => {
 
   function stopStreaming() {
     _abortController?.abort()
+    _abortController = null
     isStreaming.value = false
+    streamingContent.value = ''
+    streamingIntent.value = null
   }
 
-  async function actOnPlan(messageId: string, action: string, modifications?: string) {
+  function clearCurrentConversation() {
+    _abortController?.abort()
+    _abortController = null
+    isStreaming.value = false
+    currentConversation.value = null
+    messages.value = []
+    streamingContent.value = ''
+    streamingIntent.value = null
+    error.value = null
+  }
+
+  async function actOnPlan(messageId: string, action: PlanAction, modifications?: string) {
+    error.value = null
     try {
       await convApi.actOnPlan(messageId, action, modifications)
-    } catch (e: any) {
-      error.value = e?.response?.data?.detail || 'Failed to act on plan'
+    } catch (e: unknown) {
+      const apiErr = extractApiError(e)
+      error.value = apiErr.detail
       console.error('[store] actOnPlan failed:', e)
       throw e
     }
   }
 
   async function deleteConversation(convId: string) {
+    error.value = null
     try {
       await convApi.deleteConversation(convId)
       conversations.value = conversations.value.filter(c => c.id !== convId)
@@ -174,8 +234,9 @@ export const useConversationStore = defineStore('conversations', () => {
         currentConversation.value = null
         messages.value = []
       }
-    } catch (e: any) {
-      error.value = e?.response?.data?.detail || 'Failed to delete conversation'
+    } catch (e: unknown) {
+      const apiErr = extractApiError(e)
+      error.value = apiErr.detail
       console.error('[store] deleteConversation failed:', e)
       throw e
     }
@@ -186,10 +247,11 @@ export const useConversationStore = defineStore('conversations', () => {
       const models = await convApi.fetchAvailableModels()
       availableModels.value = models
       if (!selectedModel.value || !models.includes(selectedModel.value)) {
-        selectedModel.value = models[0]
+        selectedModel.value = models[0] || 'gpt-4o'
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('[store] fetchAvailableModels failed:', e)
+      // Keep current model selection; availableModels stays empty until API succeeds
     }
   }
 
@@ -203,7 +265,8 @@ export const useConversationStore = defineStore('conversations', () => {
     availableModels, total, page,
     hasConversations,
     clearError, fetchConversations, createConversation, fetchConversation,
-    sendMessage, stopStreaming, actOnPlan, deleteConversation,
+    sendMessage, stopStreaming, clearCurrentConversation,
+    actOnPlan, deleteConversation,
     fetchAvailableModels, setSelectedModel,
   }
 })

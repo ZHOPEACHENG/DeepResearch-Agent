@@ -73,6 +73,23 @@ async def get_current_user(
             detail="User not found",
         )
 
+    # ── Token version check ─────────────────────────────────────────
+    # Rejects access tokens issued before a logout or refresh rotation.
+    # This closes the 30-minute window where a revoked access token
+    # would otherwise remain usable until natural expiry.
+    if payload.ver != user.token_version:
+        logger.warning(
+            "auth_token_revoked",
+            sub=payload.sub,
+            token_ver=payload.ver,
+            current_ver=user.token_version,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
 
 

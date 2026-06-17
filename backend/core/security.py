@@ -41,13 +41,16 @@ class TokenPayload(BaseModel):
     sub: str
     type: str = ""
     exp: int | None = None
+    ver: int = 0  # token_version — incremented on refresh/logout to revoke old tokens
 
 
-def create_access_token(user_id: str) -> str:
+def create_access_token(user_id: str, token_version: int = 0) -> str:
     """
     Create a short-lived JWT access token.
 
     Expiry configured via JWT_ACCESS_TOKEN_EXPIRE_MINUTES (default: 30 min).
+    The ver claim is embedded for completeness but not validated on every request
+    (access tokens are short-lived; revocation is enforced at refresh time).
     """
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=settings.jwt_access_token_expire_minutes
@@ -55,6 +58,7 @@ def create_access_token(user_id: str) -> str:
     payload = {
         "sub": str(user_id),
         "type": "access",
+        "ver": token_version,
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
@@ -62,11 +66,13 @@ def create_access_token(user_id: str) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(user_id: str) -> str:
+def create_refresh_token(user_id: str, token_version: int = 0) -> str:
     """
     Create a long-lived JWT refresh token.
 
     Expiry configured via JWT_REFRESH_TOKEN_EXPIRE_DAYS (default: 7 days).
+    The ver claim binds the token to a specific token_version — when the version
+    is incremented (on refresh or logout), all previously issued tokens are revoked.
     """
     expire = datetime.now(timezone.utc) + timedelta(
         days=settings.jwt_refresh_token_expire_days
@@ -74,10 +80,16 @@ def create_refresh_token(user_id: str) -> str:
     payload = {
         "sub": str(user_id),
         "type": "refresh",
+        "ver": token_version,
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }
-    logger.info("refresh_token_created", sub=str(user_id), expires=expire.isoformat())
+    logger.info(
+        "refresh_token_created",
+        sub=str(user_id),
+        ver=token_version,
+        expires=expire.isoformat(),
+    )
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
@@ -108,12 +120,13 @@ def decode_token(token: str) -> TokenPayload:
         sub=sub,
         type=raw.get("type", ""),
         exp=raw.get("exp"),
+        ver=raw.get("ver", 0),
     )
 
 
 # ── Account Lockout ──────────────────────────────────────────────────
 
-MAX_LOGIN_ATTEMPTS = 3
+MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_DURATION_MINUTES = 15
 
 
@@ -130,7 +143,7 @@ def is_account_locked(locked_until: datetime | None) -> bool:
     return False
 
 
-def record_failed_login(login_attempts: int) -> tuple[int, datetime | None]:
+def record_failed_login(login_attempts: int, user_id: str = "") -> tuple[int, datetime | None]:
     """
     Increment failed login counter and potentially lock the account.
 
@@ -141,8 +154,15 @@ def record_failed_login(login_attempts: int) -> tuple[int, datetime | None]:
         lock_until = datetime.now(timezone.utc) + timedelta(
             minutes=LOCKOUT_DURATION_MINUTES
         )
-        logger.warning("account_locked", attempts=attempts, locked_until=lock_until.isoformat())
+        logger.warning(
+            "account_locked",
+            attempts=attempts,
+            max_attempts=MAX_LOGIN_ATTEMPTS,
+            locked_until=lock_until.isoformat(),
+            user_id=user_id,
+        )
         return attempts, lock_until
+    logger.info("failed_login_recorded", attempts=attempts, user_id=user_id)
     return attempts, None
 
 

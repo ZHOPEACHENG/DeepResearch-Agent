@@ -18,4 +18,22 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    target: "es2021",
+    cssCodeSplit: true,
+    minify: "esbuild",
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Stable framework chunk — rarely changes
+          'vendor-vue': ['vue', 'vue-router', 'pinia'],
+          // UI library chunk — changes only on Element Plus upgrades
+          'vendor-element': ['element-plus'],
+          // HTTP client — rarely changes
+          'vendor-axios': ['axios'],
+        },
+      },
+    },
+  },
 });

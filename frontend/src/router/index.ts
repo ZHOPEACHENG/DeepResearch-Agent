@@ -1,50 +1,89 @@
 /**
  * Vue Router configuration.
  *
- * Phase 3b: Chat-first routing with ConversationSidebar layout.
+ * Chat-first routing with ConversationSidebar layout.
  * Auth guards redirect unauthenticated users to login.
+ * Auth pages (login/register) render standalone (no sidebar).
+ * Authenticated pages render inside AppLayout (with sidebar).
+ *
+ * Note: authStore.init() is awaited in main.ts before mount,
+ * so the router guard runs after session restoration completes.
  */
 
 import { createRouter, createWebHistory } from 'vue-router'
+import { getAccessToken } from '@/api/client'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    // Phase 3b: Chat (primary interaction surface)
+    // Authenticated section — wrapped in AppLayout (sidebar + router-view)
     {
       path: '/',
+      component: () => import('@/components/layout/AppLayout.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          redirect: '/chat',
+        },
+        {
+          path: 'chat',
+          name: 'Chat',
+          component: () => import('@/pages/ChatPage.vue'),
+        },
+        {
+          path: 'chat/:conversationId',
+          name: 'ChatConversation',
+          component: () => import('@/pages/ChatPage.vue'),
+        },
+        {
+          path: 'profile',
+          name: 'Profile',
+          component: () => import('@/pages/ProfilePage.vue'),
+        },
+      ],
+    },
+
+    // Public pages — standalone, no sidebar
+    {
+      path: '/login',
+      name: 'Login',
+      component: () => import('@/pages/LoginPage.vue'),
+      meta: { guest: true },
+    },
+    {
+      path: '/register',
+      name: 'Register',
+      component: () => import('@/pages/RegisterPage.vue'),
+      meta: { guest: true },
+    },
+
+    // 404 fallback
+    {
+      path: '/:pathMatch(.*)*',
       redirect: '/chat',
     },
-    {
-      path: '/chat',
-      name: 'Chat',
-      component: () => import('@/pages/ChatPage.vue'),
-      meta: { requiresAuth: true },
-    },
-    {
-      path: '/chat/:conversationId',
-      name: 'ChatConversation',
-      component: () => import('@/pages/ChatPage.vue'),
-      meta: { requiresAuth: true },
-    },
-    // Phase 5 (US3): Auth pages
-    // { path: '/login', name: 'Login', component: () => import('@/pages/LoginPage.vue') },
-    // { path: '/register', name: 'Register', component: () => import('@/pages/RegisterPage.vue') },
-    // Phase 7 (US5): Knowledge Base
-    // { path: '/knowledge', name: 'KnowledgeBase', component: () => import('@/pages/KnowledgeBasePage.vue') },
-    // Phase 5 (US3): Profile
-    // { path: '/profile', name: 'Profile', component: () => import('@/pages/ProfilePage.vue') },
   ],
 })
 
-// Auth navigation guard (Phase 5 will enhance)
+// ── Navigation Guards ─────────────────────────────────────────────────
+
 router.beforeEach((to, _from, next) => {
-  const token = localStorage.getItem('access_token')
-  if (to.meta.requiresAuth && !token) {
-    next('/login')
-  } else {
-    next()
+  const token = getAccessToken()
+
+  // Authenticated pages (including the / parent layout) — require a token
+  if (to.matched.some(r => r.meta.requiresAuth) && !token) {
+    next({ name: 'Login', query: { redirect: to.fullPath } })
+    return
   }
+
+  // Guest-only pages (login, register) — redirect to /chat if already authed
+  if (to.meta.guest && token) {
+    next({ name: 'Chat' })
+    return
+  }
+
+  next()
 })
 
 export default router

@@ -31,6 +31,10 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
     login_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    token_version: Mapped[int] = mapped_column(
+        Integer, default=0,
+        comment="Incremented on refresh/logout to invalidate all previously issued tokens",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
