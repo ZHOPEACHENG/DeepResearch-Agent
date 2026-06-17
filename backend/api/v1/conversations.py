@@ -110,7 +110,7 @@ async def get_conversation(
             conv_id=str(conversation_id),
             user_id=str(current_user.id),
         )
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail="对话不存在")
 
     return ConversationRead(
         id=conv.id, title=conv.title, model=conv.model,
@@ -142,7 +142,7 @@ async def update_conversation(
             conv_id=str(conversation_id),
             user_id=str(current_user.id),
         )
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail="对话不存在")
     return ConversationRead(
         id=conv.id, title=conv.title, model=conv.model,
         message_count=0, last_message_preview=None,
@@ -169,7 +169,7 @@ async def delete_conversation(
             conv_id=str(conversation_id),
             user_id=str(current_user.id),
         )
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail="对话不存在")
 
 
 # ── T3b-015: Send Message (SSE Stream) ──────────────────────────────────
@@ -197,7 +197,7 @@ async def send_message(
             conv_id=str(conversation_id),
             user_id=str(current_user.id),
         )
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail="对话不存在")
 
     logger.info(
         "api_send_message",
@@ -224,7 +224,7 @@ async def send_message(
                 user_id=str(current_user.id),
                 exc_info=True,
             )
-            yield f"event: error\ndata: {json.dumps({'message': 'Stream error'}, ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {json.dumps({'message': '数据流传输错误'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -264,7 +264,7 @@ async def get_messages(
             conv_id=str(conversation_id),
             user_id=str(current_user.id),
         )
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail="对话不存在")
 
     result = await conversation_service.get_messages(
         conversation_id, before_id=before_id, limit=limit,
@@ -295,7 +295,7 @@ async def plan_action(
         conv_id = await conversation_service.get_message_conversation_id(message_id)
         await conversation_service.get_conversation(conv_id, current_user.id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Message not found")
+        raise HTTPException(status_code=404, detail="消息不存在")
 
     logger.info(
         "api_plan_action",

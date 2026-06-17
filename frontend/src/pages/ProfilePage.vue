@@ -323,13 +323,13 @@ function goBack() {
 
 <style scoped>
 .profile-page {
-  min-height: 100vh;
+  min-height: 100dvh;
   background: #f5f7fa;
   padding: 24px;
 }
 
 .profile-container {
-  max-width: 700px;
+  max-width: 900px;
   margin: 0 auto;
 }
 

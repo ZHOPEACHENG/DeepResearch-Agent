@@ -11,7 +11,7 @@
  */
 
 import { createRouter, createWebHistory } from 'vue-router'
-import { getAccessToken } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -69,16 +69,19 @@ const router = createRouter({
 // ── Navigation Guards ─────────────────────────────────────────────────
 
 router.beforeEach((to, _from, next) => {
-  const token = getAccessToken()
+  // Use Pinia auth store — more reliable than raw localStorage.
+  // authStore.init() has already completed in main.ts bootstrap before mount,
+  // so isAuthenticated reflects the true login state.
+  const authStore = useAuthStore()
 
-  // Authenticated pages (including the / parent layout) — require a token
-  if (to.matched.some(r => r.meta.requiresAuth) && !token) {
+  // Authenticated routes — redirect to login if not authenticated
+  if (to.matched.some(r => r.meta.requiresAuth) && !authStore.isAuthenticated) {
     next({ name: 'Login', query: { redirect: to.fullPath } })
     return
   }
 
   // Guest-only pages (login, register) — redirect to /chat if already authed
-  if (to.meta.guest && token) {
+  if (to.meta.guest && authStore.isAuthenticated) {
     next({ name: 'Chat' })
     return
   }

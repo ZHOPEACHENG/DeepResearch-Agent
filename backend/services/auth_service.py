@@ -34,6 +34,11 @@ from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+class AccountLockedError(PermissionError):
+    """Raised when an account is temporarily locked due to repeated failed login attempts."""
+    pass
+
+
 # Pre-computed bcrypt hash for constant-time dummy verification when a user
 # is not found, preventing timing-based email enumeration.
 # Hash of a fixed internal string — never corresponds to a real password.
@@ -77,7 +82,7 @@ async def register_user(req: UserRegisterRequest) -> TokenPair:
                 email=str(req.email),
                 conflict=conflict_field,
             )
-            raise ValueError("Username or email already registered")
+            raise ValueError("用户名或邮箱已被注册")
 
         # Create user
         user = User(
@@ -133,7 +138,7 @@ async def login_user(email: str, password: str) -> TokenPair:
             # "user not found" and "wrong password" take the same bcrypt time.
             verify_password(password, _DUMMY_HASH)
             logger.warning("login_user_not_found")
-            raise ValueError("Invalid email or password")
+            raise ValueError("邮箱或密码错误")
 
         # Check lockout
         if is_account_locked(user.locked_until):
@@ -143,9 +148,8 @@ async def login_user(email: str, password: str) -> TokenPair:
                 user_id=str(user.id),
                 locked_until=user.locked_until.isoformat(),
             )
-            raise PermissionError(
-                f"Account locked due to {MAX_LOGIN_ATTEMPTS} failed attempts. "
-                f"Try again in {remaining // 60 + 1} minutes."
+            raise AccountLockedError(
+                f"账户因 {MAX_LOGIN_ATTEMPTS} 次登录失败已被锁定，请在 {remaining // 60 + 1} 分钟后重试"
             )
 
         # Verify password
@@ -160,7 +164,7 @@ async def login_user(email: str, password: str) -> TokenPair:
                 attempts=attempts,
                 locked=locked_until is not None,
             )
-            raise ValueError("Invalid email or password")
+            raise ValueError("邮箱或密码错误")
 
         # Success — reset failed attempts
         attempts, locked_until = reset_login_attempts()
@@ -205,11 +209,11 @@ async def refresh_access_token(refresh_token: str) -> TokenPair:
         payload = decode_token(refresh_token)
     except JWTError:
         logger.warning("refresh_token_decode_failed")
-        raise ValueError("Invalid or expired refresh token")
+        raise ValueError("刷新令牌无效或已过期")
 
     if payload.type != "refresh":
         logger.warning("refresh_token_wrong_type", actual=payload.type)
-        raise ValueError("Not a refresh token")
+        raise ValueError("令牌类型错误，非刷新令牌")
 
     # Verify user still exists and is active, and check token version.
     # SELECT ... FOR UPDATE locks the row to prevent concurrent refreshes
@@ -225,11 +229,11 @@ async def refresh_access_token(refresh_token: str) -> TokenPair:
 
         if user is None:
             logger.warning("refresh_token_user_not_found", sub=payload.sub)
-            raise ValueError("User not found")
+            raise ValueError("用户不存在")
 
         if not user.is_active:
             logger.warning("refresh_token_inactive_user", sub=payload.sub)
-            raise ValueError("Account is deactivated")
+            raise ValueError("账户已被停用")
 
         # ── Token version check (rotation enforcement) ──────────────────
         if payload.ver != user.token_version:
@@ -244,7 +248,7 @@ async def refresh_access_token(refresh_token: str) -> TokenPair:
                 token_ver=payload.ver,
                 current_ver=user.token_version,
             )
-            raise ValueError("Refresh token has been revoked — please log in again")
+            raise ValueError("刷新令牌已失效，请重新登录")
 
         # Increment version — row is locked, no concurrent modification possible
         user.token_version += 1
@@ -306,7 +310,7 @@ async def get_user_profile(user_id: str) -> UserRead:
 
     if user is None:
         logger.warning("profile_read_user_not_found", user_id=user_id)
-        raise ValueError("User not found")
+        raise ValueError("用户不存在")
 
     logger.info("profile_read", user_id=user_id)
     return UserRead.model_validate(user)
@@ -335,7 +339,7 @@ async def update_user_profile(
         user = result.scalar_one_or_none()
 
         if user is None:
-            raise ValueError("User not found")
+            raise ValueError("用户不存在")
 
         changed: list[str] = []
 
@@ -356,7 +360,7 @@ async def update_user_profile(
                     "profile_update_email_conflict",
                     user_id=user_id,
                 )
-                raise ValueError(f"Email '{email}' already in use")
+                raise ValueError(f"邮箱 '{email}' 已被使用")
             user.email = email
             changed.append("email")
 
@@ -388,11 +392,11 @@ async def change_user_password(
         user = result.scalar_one_or_none()
 
         if user is None:
-            raise ValueError("User not found")
+            raise ValueError("用户不存在")
 
         if not verify_password(old_password, user.password_hash):
             logger.warning("password_change_bad_old", user_id=user_id)
-            raise ValueError("Current password is incorrect")
+            raise ValueError("当前密码错误")
 
         user.password_hash = hash_password(new_password)
         await session.commit()

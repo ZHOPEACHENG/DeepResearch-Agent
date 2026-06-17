@@ -160,10 +160,31 @@ export interface ApiError {
   type?: string
 }
 
+const ERROR_TRANSLATIONS: Record<string, string> = {
+  'Username or email already registered': '用户名或邮箱已被注册',
+  'Invalid email or password': '邮箱或密码错误',
+  'Invalid or expired refresh token': '刷新令牌无效或已过期',
+  'Invalid or expired token': '令牌无效或已过期',
+  'Not a refresh token': '令牌类型错误，非刷新令牌',
+  'Not an access token': '令牌类型错误，非访问令牌',
+  'User not found': '用户不存在',
+  'Account is deactivated': '账户已被停用',
+  'Token has been revoked': '令牌已被吊销',
+  'Authentication required': '需要登录认证',
+  'Conversation not found': '对话不存在',
+  'Message not found': '消息不存在',
+  'Refresh token has been revoked': '刷新令牌已失效，请重新登录',
+  'Current password is incorrect': '当前密码错误',
+  'Registration failed': '注册失败，请稍后重试',
+  'Login failed': '登录失败，请稍后重试',
+}
+
 export function extractApiError(error: unknown): ApiError {
   if (axios.isAxiosError(error) && error.response?.data) {
+    const detail = error.response.data.detail || '发生未知错误，请稍后重试'
+    const translated = ERROR_TRANSLATIONS[detail] || detail
     return {
-      detail: error.response.data.detail || '发生未知错误，请稍后重试',
+      detail: translated,
       statusCode: error.response.status,
       type: error.response.data.type,
     }

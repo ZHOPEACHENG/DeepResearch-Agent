@@ -123,7 +123,7 @@ async function handleLogin() {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
+  min-height: 100dvh;
   background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
   padding: 16px;
 }
@@ -175,7 +175,7 @@ async function handleLogin() {
 }
 .auth-footer a:hover { text-decoration: underline; }
 
-@media (max-width: 480px) {
+@media (max-width: 640px) {
   .auth-card {
     padding: 24px;
   }

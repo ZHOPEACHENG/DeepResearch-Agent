@@ -96,7 +96,7 @@ async def handle_message(
             error=str(exc),
             exc_info=True,
         )
-        yield _sse("error", {"message": str(exc), "intent": intent})
+        yield _sse("error", {"message": "处理消息时发生内部错误", "intent": intent})
 
     yield _sse("done", {"conversationId": str(conversation_id), "model": model})
 
@@ -176,7 +176,7 @@ async def _handle_chat(
             yield _sse("chat_chunk", {"content": token})
     except Exception:
         logger.error("chat_reply_failed", conv_id=str(conversation_id), exc_info=True)
-        yield _sse("error", {"message": "Failed to generate reply"})
+        yield _sse("error", {"message": "生成回复失败，请重试"})
         return
 
     # Save assistant message
@@ -230,7 +230,7 @@ Output a JSON with:
         )
     except Exception:
         logger.error("plan_generation_failed", conv_id=str(conversation_id), exc_info=True)
-        yield _sse("error", {"message": "Failed to generate research plan"})
+        yield _sse("error", {"message": "生成研究计划失败，请重试"})
         return
 
     # Parse plan JSON from LLM response

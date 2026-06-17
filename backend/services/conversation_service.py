@@ -32,7 +32,7 @@ async def _get_conv_for_user(session, conv_id: uuid.UUID, user_id: uuid.UUID) ->
     conv = result.scalar_one_or_none()
     if conv is None:
         logger.warning("conversation_not_found", conv_id=str(conv_id), user_id=str(user_id))
-        raise ValueError(f"Conversation {conv_id} not found")
+        raise ValueError(f"对话 {conv_id} 不存在")
     return conv
 
 
@@ -214,7 +214,7 @@ async def get_message_conversation_id(msg_id: uuid.UUID) -> uuid.UUID:
         )
         conv_id = result.scalar_one_or_none()
         if conv_id is None:
-            raise ValueError(f"Message {msg_id} not found")
+            raise ValueError(f"消息 {msg_id} 不存在")
         return conv_id
 
 

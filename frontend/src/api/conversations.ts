@@ -1,7 +1,7 @@
 import apiClient, { getAccessToken } from './client'
 import type {
   ConversationSummary, ConversationListResponse,
-  MessageDetail, MessageListResponse, SSEEvent, PlanAction,
+  MessageListResponse, SSEEvent, PlanAction,
 } from '@/types/conversation'
 
 export async function fetchAvailableModels(): Promise<string[]> {
@@ -96,9 +96,9 @@ export function sendMessageStream(
     body: JSON.stringify({ content, parent_message_id: parentMessageId, model }),
     signal: controller.signal,
   }).then(async (response) => {
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) throw new Error(`请求失败 (HTTP ${response.status})`)
     const reader = response.body?.getReader()
-    if (!reader) throw new Error('No stream body')
+    if (!reader) throw new Error('服务器未返回数据流')
     const decoder = new TextDecoder()
     let buffer = ''
 
@@ -129,8 +129,8 @@ export function sendMessageStream(
       reader.releaseLock()
     }
     onDone()
-  }).catch((err) => {
-    if (err.name !== 'AbortError') {
+  }).catch((err: unknown) => {
+    if (err instanceof Error && err.name !== 'AbortError') {
       console.error('[conversations api] SSE stream failed:', err)
       onError(err instanceof Error ? err : new Error(String(err)))
     }

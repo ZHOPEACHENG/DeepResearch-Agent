@@ -41,7 +41,7 @@ async def get_me(current_user: User = Depends(get_current_active_user)):
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+            detail="用户不存在",
         )
     except Exception:
         logger.error(
@@ -51,7 +51,7 @@ async def get_me(current_user: User = Depends(get_current_active_user)):
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to load profile",
+            detail="加载个人信息失败",
         )
     return profile
 
@@ -81,10 +81,16 @@ async def update_me(
             email=str(req.email) if req.email else None,
         )
     except ValueError as e:
+        detail = str(e)
+        if "不存在" in detail or "not found" in detail.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=detail,
+            )
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT if "already" in str(e).lower()
+            status_code=status.HTTP_409_CONFLICT if "already" in detail.lower()
             else status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail=detail,
         )
     except Exception:
         logger.error(
@@ -94,7 +100,7 @@ async def update_me(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update profile",
+            detail="更新个人信息失败",
         )
     return profile
 
@@ -121,9 +127,15 @@ async def change_password(
             new_password=req.new_password,
         )
     except ValueError as e:
+        detail = str(e)
+        if "不存在" in detail or "not found" in detail.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=detail,
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
+            detail=detail,
         )
     except Exception:
         logger.error(
@@ -133,6 +145,6 @@ async def change_password(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to change password",
+            detail="密码修改失败",
         )
-    return {"detail": "Password changed successfully"}
+    return {"detail": "密码修改成功"}

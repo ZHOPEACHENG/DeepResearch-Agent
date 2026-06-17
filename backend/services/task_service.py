@@ -66,7 +66,7 @@ async def _get_task_for_user(
             task_id=str(task_id),
             user_id=str(user_id),
         )
-        raise ValueError(f"Task {task_id} not found for user {user_id}")
+        raise ValueError(f"任务 {task_id} 不存在")
     return task
 
 
@@ -104,7 +104,7 @@ def validate_transition(from_status: str, to_status: str) -> None:
             allowed=detail,
         )
         raise ValueError(
-            f"Invalid transition: {from_status} → {to_status}. Allowed: {detail}"
+            f"无效的状态变更: {from_status} → {to_status}，允许的操作: {detail}"
         )
     logger.info(
         "task_transition_validated",
@@ -171,9 +171,7 @@ async def update_task_status(
                     limit=limit,
                 )
                 raise RuntimeError(
-                    f"Maximum {limit} concurrent tasks reached. "
-                    f"You have {running} running task(s). "
-                    "Wait for one to finish or pause a running task before starting a new one."
+                    f"已达到最大并发任务数 {limit}，当前有 {running} 个运行中的任务，请等待任务完成或暂停后重试"
                 )
             logger.info(
                 "concurrency_check_passed",
@@ -231,7 +229,7 @@ async def create_task(
             length=len(stripped),
         )
         raise ValueError(
-            f"Topic must be at least 10 characters (got {len(stripped)})."
+            f"研究主题至少需要 10 个字符（当前 {len(stripped)} 个）"
         )
 
     task = ResearchTask(
@@ -294,7 +292,7 @@ async def list_tasks(
                     status=status,
                 )
                 raise ValueError(
-                    f"Invalid status '{status}'. Valid: {ResearchTask.VALID_STATUSES}"
+                    f"无效的状态 '{status}'，有效值: {ResearchTask.VALID_STATUSES}"
                 )
             conditions.append(ResearchTask.status == status)
 
@@ -351,7 +349,7 @@ async def delete_task(task_id: uuid.UUID, user_id: uuid.UUID) -> None:
                 user_id=str(user_id),
             )
             raise ValueError(
-                "Cannot delete a running task. Pause it first, then delete."
+                "无法删除正在运行的任务，请先暂停后再删除"
             )
 
         # Cascading delete — the ORM relationship cascade handles the report
@@ -457,7 +455,7 @@ async def store_stage_output(
     collection_name = STAGE_COLLECTIONS.get(stage)
     if collection_name is None:
         raise ValueError(
-            f"Unknown stage '{stage}'. Valid: {list(STAGE_COLLECTIONS.keys())}"
+            f"未知阶段 '{stage}'，有效值: {list(STAGE_COLLECTIONS.keys())}"
         )
 
     db = get_mongo_db()
@@ -523,7 +521,7 @@ async def get_stage_outputs(
     collection_name = STAGE_COLLECTIONS.get(stage)
     if collection_name is None:
         raise ValueError(
-            f"Unknown stage '{stage}'. Valid: {list(STAGE_COLLECTIONS.keys())}"
+            f"未知阶段 '{stage}'，有效值: {list(STAGE_COLLECTIONS.keys())}"
         )
 
     db = get_mongo_db()
@@ -600,9 +598,7 @@ async def enforce_concurrency(user_id: uuid.UUID) -> None:
             limit=limit,
         )
         raise RuntimeError(
-            f"Maximum {limit} concurrent tasks reached. "
-            f"You have {running} running task(s). "
-            "Wait for one to finish or pause a running task before starting a new one."
+            f"已达到最大并发任务数 {limit}，当前有 {running} 个运行中的任务，请等待任务完成或暂停后重试"
         )
 
     logger.info(

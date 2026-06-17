@@ -22,6 +22,7 @@ from backend.schemas.user import (
     UserRegisterRequest,
 )
 from backend.services.auth_service import (
+    AccountLockedError,
     login_user,
     logout_user,
     refresh_access_token,
@@ -63,7 +64,7 @@ async def register(req: UserRegisterRequest):
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration failed — please try again later",
+            detail="注册失败，请稍后重试",
         )
     return token_pair
 
@@ -84,7 +85,7 @@ async def login(req: UserLoginRequest):
     """
     try:
         token_pair = await login_user(str(req.email), req.password)
-    except PermissionError as e:
+    except AccountLockedError as e:
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
             detail=str(e),
@@ -99,7 +100,7 @@ async def login(req: UserLoginRequest):
         logger.error("login_unexpected_error", email=str(req.email), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Login failed — please try again later",
+            detail="登录失败，请稍后重试",
         )
     return token_pair
 
@@ -127,7 +128,7 @@ async def refresh(req: RefreshRequest):
         logger.error("refresh_unexpected_error", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Token refresh failed — please log in again",
+            detail="令牌刷新失败，请重新登录",
         )
     return token_pair
 
@@ -155,5 +156,5 @@ async def logout(current_user: User = Depends(get_current_user)):
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Logout failed — please try again",
+            detail="退出登录失败，请重试",
         )

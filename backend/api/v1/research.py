@@ -60,7 +60,7 @@ async def get_stage_outputs(
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Task {task_id} not found",
+            detail=f"任务 {task_id} 不存在",
         )
 
     # Build the response as plain dicts (MongoDB stores string UUIDs,

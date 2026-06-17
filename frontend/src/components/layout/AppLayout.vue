@@ -3,6 +3,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useConversationStore } from '@/stores/conversations'
 import { useAuthStore } from '@/stores/auth'
 import { onMounted } from 'vue'
+import { UserFilled } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 
 const router = useRouter()
@@ -30,6 +31,10 @@ function goToProfile() {
 
 async function handleLogout() {
   await authStore.logoutUser()
+  // Clear all conversation state to prevent data leakage to next user
+  convStore.clearCurrentConversation()
+  convStore.conversations = []
+  convStore.error = null
   router.push('/login')
 }
 
@@ -89,8 +94,17 @@ function formatDate(iso: string): string {
           @keydown="onConvKeydown($event, conv.id)"
           @contextmenu.prevent="handleDeleteConversation(conv.id, $event)"
         >
-          <span class="conv-title">{{ conv.title }}</span>
-          <span class="conv-date">{{ formatDate(conv.updatedAt) }}</span>
+          <div class="conv-header">
+            <span class="conv-title">{{ conv.title }}</span>
+            <span class="conv-model">{{ conv.model }}</span>
+          </div>
+          <div class="conv-preview" v-if="conv.lastMessagePreview">
+            {{ conv.lastMessagePreview }}
+          </div>
+          <div class="conv-meta">
+            <span>{{ conv.messageCount }}条</span>
+            <span>{{ formatDate(conv.updatedAt) }}</span>
+          </div>
         </div>
       </div>
 
@@ -126,7 +140,7 @@ function formatDate(iso: string): string {
 <style scoped>
 .app-layout {
   display: flex;
-  height: 100vh;
+  height: 100dvh;
 }
 
 .sidebar {
@@ -173,18 +187,46 @@ function formatDate(iso: string): string {
   background: #ecf5ff;
 }
 
+.conv-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
 .conv-title {
-  display: block;
   font-size: 14px;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
 }
 
-.conv-date {
+.conv-model {
+  font-size: 11px;
+  color: #909399;
+  background: #f0f0f0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.conv-preview {
   font-size: 12px;
   color: #909399;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #c0c4cc;
+  margin-top: 4px;
 }
 
 /* ── Sidebar Footer / User Menu ──────────────────────────────────── */
@@ -219,6 +261,6 @@ function formatDate(iso: string): string {
 
 .content {
   flex: 1;
-  overflow: hidden;
+  overflow-y: auto;
 }
 </style>

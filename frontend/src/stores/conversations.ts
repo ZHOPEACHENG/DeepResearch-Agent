@@ -71,8 +71,20 @@ export const useConversationStore = defineStore('conversations', () => {
   }
 
   async function fetchConversation(convId: string) {
+    // Abort any in-flight SSE stream from previous conversation
+    _abortController?.abort()
+    _abortController = null
+    // Reset streaming state so thinking indicator disappears
+    isStreaming.value = false
+    streamingContent.value = ''
+    streamingIntent.value = null
+
     loading.value = true
     error.value = null
+    // Clear current conversation to trigger loading UI
+    currentConversation.value = null
+    messages.value = []
+
     try {
       const [conv, msgResult] = await Promise.all([
         convApi.fetchConversation(convId),
@@ -98,12 +110,26 @@ export const useConversationStore = defineStore('conversations', () => {
     streamingContent.value = ''
     streamingIntent.value = null
     error.value = null
+    let userMessageId: string | null = null
 
     _abortController = convApi.sendMessageStream(
-      convId, content, parentMessageId, selectedModel.value,
+      convId, content, parentMessageId ?? null, selectedModel.value,
       (event: SSEEvent) => {
         switch (event.event) {
           case 'message_created':
+            messages.value.push({
+              id: (event.data.messageId as string) || generateUUID(),
+              conversationId: convId,
+              role: 'user',
+              content: content,
+              messageType: 'text',
+              parentMessageId: parentMessageId || null,
+              metadata: {},
+              tokenCount: 0,
+              model: selectedModel.value,
+              createdAt: new Date().toISOString(),
+            })
+            userMessageId = messages.value[messages.value.length - 1].id
             break
 
           case 'chat_chunk':
@@ -160,7 +186,7 @@ export const useConversationStore = defineStore('conversations', () => {
                 role: 'assistant',
                 content: streamingContent.value,
                 messageType: 'text',
-                parentMessageId: null,
+                parentMessageId: userMessageId,
                 metadata: {},
                 tokenCount: 0,
                 model: selectedModel.value,
@@ -211,6 +237,19 @@ export const useConversationStore = defineStore('conversations', () => {
     streamingContent.value = ''
     streamingIntent.value = null
     error.value = null
+  }
+
+  function clearAll() {
+    _abortController?.abort()
+    _abortController = null
+    isStreaming.value = false
+    currentConversation.value = null
+    messages.value = []
+    conversations.value = []
+    streamingContent.value = ''
+    streamingIntent.value = null
+    error.value = null
+    loading.value = false
   }
 
   async function actOnPlan(messageId: string, action: PlanAction, modifications?: string) {
@@ -264,7 +303,7 @@ export const useConversationStore = defineStore('conversations', () => {
     isStreaming, streamingContent, streamingIntent, selectedModel,
     availableModels, total, page,
     hasConversations,
-    clearError, fetchConversations, createConversation, fetchConversation,
+    clearError, clearAll, fetchConversations, createConversation, fetchConversation,
     sendMessage, stopStreaming, clearCurrentConversation,
     actOnPlan, deleteConversation,
     fetchAvailableModels, setSelectedModel,

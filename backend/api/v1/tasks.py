@@ -200,7 +200,7 @@ async def delete_task(
             user_id=str(current_user.id),
             error=detail,
         )
-        if "not found" in detail:
+        if "不存在" in detail or "not found" in detail.lower():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
         if "running" in detail:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
@@ -235,13 +235,22 @@ async def start_task(
             started_at=datetime.now(timezone.utc),
         )
     except ValueError as e:
+        detail = str(e)
         logger.warning(
             "api_start_task_rejected",
             task_id=str(task_id),
             user_id=str(current_user.id),
-            error=str(e),
+            error=detail,
         )
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        if "不存在" in detail or "not found" in detail.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=detail,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=detail,
+        )
     except RuntimeError as e:
         logger.warning(
             "api_start_task_limit",
@@ -277,13 +286,22 @@ async def pause_task(
             user_id=current_user.id,
         )
     except ValueError as e:
+        detail = str(e)
         logger.warning(
             "api_pause_task_rejected",
             task_id=str(task_id),
             user_id=str(current_user.id),
-            error=str(e),
+            error=detail,
         )
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        if "不存在" in detail or "not found" in detail.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=detail,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=detail,
+        )
 
     return _task_to_read(task)
 
@@ -311,13 +329,22 @@ async def resume_task(
             user_id=current_user.id,
         )
     except ValueError as e:
+        detail = str(e)
         logger.warning(
             "api_resume_task_rejected",
             task_id=str(task_id),
             user_id=str(current_user.id),
-            error=str(e),
+            error=detail,
         )
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        if "不存在" in detail or "not found" in detail.lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=detail,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=detail,
+        )
     except RuntimeError as e:
         logger.warning(
             "api_resume_task_limit",

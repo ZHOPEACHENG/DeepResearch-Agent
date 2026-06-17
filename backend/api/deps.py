@@ -34,7 +34,7 @@ async def get_current_user(
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
+            detail="需要登录认证",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -46,7 +46,7 @@ async def get_current_user(
         logger.warning("auth_token_invalid", token=token[:8] + "...")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
+            detail="令牌无效或已过期",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -54,7 +54,7 @@ async def get_current_user(
         logger.warning("auth_wrong_token_type", actual=payload.type)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not an access token",
+            detail="令牌类型错误，非访问令牌",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -70,7 +70,7 @@ async def get_current_user(
         logger.warning("auth_user_not_found", sub=payload.sub)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
+            detail="用户不存在",
         )
 
     # ── Token version check ─────────────────────────────────────────
@@ -86,7 +86,7 @@ async def get_current_user(
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has been revoked",
+            detail="令牌已被吊销",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -101,6 +101,6 @@ async def get_current_active_user(
         logger.warning("auth_inactive_user", sub=str(current_user.id))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is deactivated",
+            detail="账户已被停用",
         )
     return current_user
