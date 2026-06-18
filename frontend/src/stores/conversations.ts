@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type {
-  ConversationSummary, MessageDetail, SSEEvent, PlanAction,
+  ConversationSummary, MessageDetail, SSEEvent, PlanAction, ChatMode,
 } from '@/types/conversation'
 import * as convApi from '@/api/conversations'
 import { extractApiError } from '@/api/client'
@@ -27,11 +27,13 @@ export const useConversationStore = defineStore('conversations', () => {
   const error = ref<string | null>(null)
   const isStreaming = ref(false)
   const streamingContent = ref('')
-  const streamingIntent = ref<string | null>(null)
   const selectedModel = ref<string>('gpt-4o')
   const availableModels = ref<string[]>([])
   const total = ref(0)
   const page = ref(1)
+  // User-selected Deep Research toggle: 'chat' (default) or 'research'.
+  // Persists across sends until the user changes it — no auto-reset.
+  const mode = ref<ChatMode>('chat')
 
   let _abortController: AbortController | null = null
 
@@ -77,7 +79,6 @@ export const useConversationStore = defineStore('conversations', () => {
     // Reset streaming state so thinking indicator disappears
     isStreaming.value = false
     streamingContent.value = ''
-    streamingIntent.value = null
 
     loading.value = true
     error.value = null
@@ -108,12 +109,11 @@ export const useConversationStore = defineStore('conversations', () => {
 
     isStreaming.value = true
     streamingContent.value = ''
-    streamingIntent.value = null
     error.value = null
     let userMessageId: string | null = null
 
     _abortController = convApi.sendMessageStream(
-      convId, content, parentMessageId ?? null, selectedModel.value,
+      convId, content, parentMessageId ?? null, selectedModel.value, mode.value,
       (event: SSEEvent) => {
         switch (event.event) {
           case 'message_created':
@@ -134,10 +134,6 @@ export const useConversationStore = defineStore('conversations', () => {
 
           case 'chat_chunk':
             streamingContent.value += (event.data.content as string) || ''
-            break
-
-          case 'intent_classified':
-            streamingIntent.value = event.data.intent as string
             break
 
           case 'plan_generated':
@@ -225,7 +221,6 @@ export const useConversationStore = defineStore('conversations', () => {
     _abortController = null
     isStreaming.value = false
     streamingContent.value = ''
-    streamingIntent.value = null
   }
 
   function clearCurrentConversation() {
@@ -235,7 +230,6 @@ export const useConversationStore = defineStore('conversations', () => {
     currentConversation.value = null
     messages.value = []
     streamingContent.value = ''
-    streamingIntent.value = null
     error.value = null
   }
 
@@ -247,7 +241,6 @@ export const useConversationStore = defineStore('conversations', () => {
     messages.value = []
     conversations.value = []
     streamingContent.value = ''
-    streamingIntent.value = null
     error.value = null
     loading.value = false
   }
@@ -300,8 +293,9 @@ export const useConversationStore = defineStore('conversations', () => {
 
   return {
     conversations, currentConversation, messages, loading, error,
-    isStreaming, streamingContent, streamingIntent, selectedModel,
+    isStreaming, streamingContent, selectedModel,
     availableModels, total, page,
+    mode,
     hasConversations,
     clearError, clearAll, fetchConversations, createConversation, fetchConversation,
     sendMessage, stopStreaming, clearCurrentConversation,

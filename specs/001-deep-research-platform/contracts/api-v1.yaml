@@ -351,10 +351,9 @@ paths:
       tags: [Conversations]
       summary: 发送消息并接收 SSE 流式响应
       description: |
-        核心交互端点。系统执行意图分类 → 分支处理：
-        - chat: 流式返回 LLM 文本回复
+        核心交互端点。按请求体 mode 分支处理（用户显式选择，无 LLM 意图分类）：
+        - chat（默认）: 流式返回 LLM 文本回复
         - research: 生成研究计划 → emit plan_generated → 等待用户确认
-        - follow_up: 基于会话上下文 + 研究报告回答
       requestBody:
         required: true
         content:
@@ -370,6 +369,15 @@ paths:
                 parent_message_id:
                   type: string
                   format: uuid
+                model:
+                  type: string
+                  nullable: true
+                  description: 覆盖会话默认模型；为空则使用会话/默认模型
+                mode:
+                  type: string
+                  enum: [chat, research]
+                  default: chat
+                  description: 用户选择的模式——chat 流式回复，research 启动研究流水线
       responses:
         "200":
           description: SSE 事件流
@@ -974,7 +982,6 @@ components:
           enum:
             - message_created
             - chat_chunk
-            - intent_classified
             - plan_generated
             - retrieval_started
             - retrieval_progress

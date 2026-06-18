@@ -36,7 +36,6 @@ LLM_API_BASE=https://api.openai.com/v1
 LLM_MODEL=gpt-4o
 LLM_EMBED_MODEL=text-embedding-3-small
 CHAT_MODEL=gpt-4o
-INTENT_ROUTER_MODEL=gpt-4o
 MAX_CONTEXT_TOKENS=128000
 
 # 搜索 API 配置（必填）
@@ -128,7 +127,7 @@ curl -N http://localhost:8000/api/v1/conversations/<conversation_id>/messages \
 
 ### 3. 发起深度研究
 
-在对话中发送研究主题，系统自动识别为"研究"意图，生成研究计划卡片。点击"接受"后，研究流水线启动。
+在对话输入框旁打开"深度研究"开关，再发送研究主题，系统生成研究计划卡片。点击"接受"后，研究流水线启动。
 
 ### 4. 监控研究进度
 

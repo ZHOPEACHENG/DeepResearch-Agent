@@ -161,8 +161,11 @@ async def send_message(
     """
     Send a message and receive SSE streaming response.
 
-    Streams events: message_created → intent_classified →
-    (chat_chunk | plan_generated | error) → done
+    The request body ``mode`` selects the branch — "chat" (default) streams a
+    conversational reply; "research" starts the research pipeline. There is no
+    LLM-based intent classification; the user picks the mode explicitly.
+
+    Streams events: message_created → (chat_chunk | plan_generated | error) → done
     """
     # Verify conversation ownership through service layer
     try:
@@ -191,6 +194,7 @@ async def send_message(
                 body.content,
                 parent_message_id=body.parent_message_id,
                 model=body.model,
+                mode=body.mode,
             ):
                 event_name = sse_event["event"]
                 data_json = json.dumps(sse_event["data"], ensure_ascii=False)

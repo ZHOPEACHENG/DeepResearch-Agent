@@ -3,11 +3,14 @@ ChatService — orchestration hub for conversational research.
 
 Handles the full lifecycle of a user message:
 1. Save user Message
-2. Run IntentRouter → chat | research
-3. Branch:
+2. Branch by user-selected mode (chat | research) — NO LLM intent routing.
    - chat: load history → stream LLM reply → save assistant Message
    - research: create ResearchTask → run Planner → emit plan_card →
      pause for user action (plan_confirmation_node)
+
+The mode is chosen explicitly by the user via the "深度研究" toggle in the UI,
+not inferred by an LLM. This avoids silent misclassification and the extra
+per-message LLM round-trip the old IntentRouter incurred.
 
 SSE events are yielded as dicts that the API layer serializes and emits.
 """
@@ -15,10 +18,9 @@ SSE events are yielded as dicts that the API layer serializes and emits.
 import asyncio
 import json
 import uuid
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Literal
 
 from backend.services import conversation_service, task_service
-from backend.services.intent_router import classify_intent
 from backend.tools.llm import get_llm_provider
 from backend.utils.logging import get_logger
 
@@ -39,6 +41,7 @@ async def handle_message(
     *,
     parent_message_id: uuid.UUID | None = None,
     model: str | None = None,
+    mode: Literal["chat", "research"] = "chat",
 ) -> AsyncGenerator[dict, None]:
     """
     Process a user message and yield SSE event dicts.
@@ -46,9 +49,14 @@ async def handle_message(
     Caller (API endpoint) iterates this generator and writes each dict
     as an SSE event to the client connection.
 
+    Args:
+        mode: User-selected mode — "chat" (default) streams a conversational
+            reply; "research" starts the research pipeline and emits a plan.
+            Replaces the former LLM-based IntentRouter classification.
+
     Yields:
         {"event": "message_created", "data": {...}}
-        {"event": "chat_chunk" | "intent_classified" | "plan_generated" | ..., "data": {...}}
+        {"event": "chat_chunk" | "plan_generated" | ..., "data": {...}}
         {"event": "done", "data": {...}}
         {"event": "error", "data": {...}}
     """
@@ -76,27 +84,23 @@ async def handle_message(
     )
     yield _sse("message_created", {"messageId": str(user_msg.id)})
 
-    # 3. Intent classification (always uses intent_router_model — not the user-selected model)
-    intent = await classify_intent(content)
-    yield _sse("intent_classified", {"intent": intent})
-
-    # 4. Branch by intent
+    # 3. Branch by user-selected mode (replaces the former LLM intent routing)
     try:
-        if intent == "chat":
-            async for event in _handle_chat(conversation_id, user_id, content, model=model):
+        if mode == "research":
+            async for event in _handle_research(conversation_id, user_id, content, user_msg.id, model=model, mode=mode):
                 yield event
-        elif intent == "research":
-            async for event in _handle_research(conversation_id, user_id, content, user_msg.id, model=model):
+        else:
+            async for event in _handle_chat(conversation_id, user_id, content, model=model, mode=mode):
                 yield event
     except Exception as exc:
         logger.error(
             "chat_service_error",
             conversation_id=str(conversation_id),
-            intent=intent,
+            mode=mode,
             error=str(exc),
             exc_info=True,
         )
-        yield _sse("error", {"message": "处理消息时发生内部错误", "intent": intent})
+        yield _sse("error", {"message": "处理消息时发生内部错误", "mode": mode})
 
     yield _sse("done", {"conversationId": str(conversation_id), "model": model})
 
@@ -147,6 +151,7 @@ async def _handle_chat(
     content: str,
     *,
     model: str | None = None,
+    mode: Literal["chat", "research"] = "chat",
 ) -> AsyncGenerator[dict, None]:
     """Stream a chat reply with conversation history as context."""
     provider = get_llm_provider()
@@ -186,6 +191,7 @@ async def _handle_chat(
         content=full_reply,
         message_type="text",
         model=model,
+        metadata={"mode": mode},
     )
     logger.info(
         "chat_reply_saved",
@@ -203,6 +209,7 @@ async def _handle_research(
     user_message_id: uuid.UUID,
     *,
     model: str | None = None,
+    mode: Literal["chat", "research"] = "research",
 ) -> AsyncGenerator[dict, None]:
     """Start a research pipeline: create task → generate plan → emit plan_card."""
     # Create a hidden ResearchTask
@@ -258,6 +265,7 @@ Output a JSON with:
             "questions": questions,
             "keywords": keywords,
             "status": "pending_confirmation",
+            "mode": mode,
         },
     )
 

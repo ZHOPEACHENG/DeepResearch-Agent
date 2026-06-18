@@ -64,6 +64,7 @@ class SendMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=10000)
     parent_message_id: UUID | None = None
     model: str | None = None
+    mode: Literal["chat", "research"] = "chat"
 
 
 class PlanActionRequest(BaseModel):
@@ -108,7 +109,7 @@ class MessageListResponse(BaseModel):
 class SSEEvent(BaseModel):
     """A single SSE event emitted during chat/research streaming."""
     event: str = Field(
-        description="SSE event type (message_created, chat_chunk, intent_classified, "
+        description="SSE event type (message_created, chat_chunk, "
                     "plan_generated, retrieval_started, retrieval_progress, "
                     "retrieval_complete, analysis_complete, gap_question, "
                     "report_chunk, report_complete, error, done)",

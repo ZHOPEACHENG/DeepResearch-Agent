@@ -1,7 +1,7 @@
 import apiClient, { getAccessToken } from './client'
 import type {
   ConversationSummary, ConversationListResponse,
-  MessageListResponse, SSEEvent, PlanAction,
+  MessageListResponse, SSEEvent, PlanAction, ChatMode,
 } from '@/types/conversation'
 
 export async function fetchAvailableModels(): Promise<string[]> {
@@ -78,6 +78,7 @@ export function sendMessageStream(
   content: string,
   parentMessageId: string | null,
   model: string | undefined,
+  mode: ChatMode,
   onEvent: (event: SSEEvent) => void,
   onError: (error: Error) => void,
   onDone: () => void,
@@ -93,7 +94,7 @@ export function sendMessageStream(
       'Authorization': token ? `Bearer ${token}` : '',
       'Accept': 'text/event-stream',
     },
-    body: JSON.stringify({ content, parent_message_id: parentMessageId, model }),
+    body: JSON.stringify({ content, parent_message_id: parentMessageId, model, mode }),
     signal: controller.signal,
   }).then(async (response) => {
     if (!response.ok) throw new Error(`请求失败 (HTTP ${response.status})`)

@@ -257,6 +257,16 @@ watch(() => store.messages.length, scrollToBottom)
             :value="m"
           />
         </el-select>
+        <el-switch
+          v-model="store.mode"
+          size="small"
+          active-value="research"
+          inactive-value="chat"
+          :disabled="store.isStreaming"
+          inline-prompt
+          active-text="深度研究"
+          inactive-text="对话"
+        />
       </div>
       <div class="chat-input">
         <el-input

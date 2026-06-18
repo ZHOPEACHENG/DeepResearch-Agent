@@ -40,7 +40,9 @@ export interface MessageListResponse {
   hasMore: boolean
 }
 
-export type SSEEventType = 'message_created' | 'chat_chunk' | 'intent_classified'
+export type ChatMode = 'chat' | 'research'
+
+export type SSEEventType = 'message_created' | 'chat_chunk'
   | 'plan_generated' | 'retrieval_started' | 'retrieval_progress'
   | 'retrieval_complete' | 'analysis_complete' | 'gap_question'
   | 'report_chunk' | 'report_complete' | 'error' | 'done'
