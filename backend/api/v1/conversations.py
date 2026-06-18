@@ -52,17 +52,7 @@ async def list_conversations(
     result = await conversation_service.list_conversations(
         current_user.id, page=page, page_size=page_size, search=search,
     )
-    items = []
-    for conv in result["conversations"]:
-        items.append(ConversationRead(
-            id=conv.id,
-            title=conv.title,
-            model=conv.model,
-            message_count=0,  # lazy
-            last_message_preview=None,
-            created_at=conv.created_at,
-            updated_at=conv.updated_at,
-        ))
+    items = [ConversationRead(**conv) for conv in result["conversations"]]
     return ConversationListResponse(
         items=items, total=result["total"], page=page, page_size=page_size,
     )
@@ -82,11 +72,7 @@ async def create_conversation(
     conv = await conversation_service.create_conversation(
         current_user.id, title=body.title, model=body.model,
     )
-    return ConversationRead(
-        id=conv.id, title=conv.title, model=conv.model,
-        message_count=0, last_message_preview=None,
-        created_at=conv.created_at, updated_at=conv.updated_at,
-    )
+    return ConversationRead(**conv)
 
 
 @router.get("/{conversation_id}", response_model=ConversationRead)
@@ -112,11 +98,7 @@ async def get_conversation(
         )
         raise HTTPException(status_code=404, detail="对话不存在")
 
-    return ConversationRead(
-        id=conv.id, title=conv.title, model=conv.model,
-        message_count=0, last_message_preview=None,
-        created_at=conv.created_at, updated_at=conv.updated_at,
-    )
+    return ConversationRead(**conv)
 
 
 @router.patch("/{conversation_id}", response_model=ConversationRead)
@@ -143,11 +125,7 @@ async def update_conversation(
             user_id=str(current_user.id),
         )
         raise HTTPException(status_code=404, detail="对话不存在")
-    return ConversationRead(
-        id=conv.id, title=conv.title, model=conv.model,
-        message_count=0, last_message_preview=None,
-        created_at=conv.created_at, updated_at=conv.updated_at,
-    )
+    return ConversationRead(**conv)
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -36,13 +36,55 @@ async def _get_conv_for_user(session, conv_id: uuid.UUID, user_id: uuid.UUID) ->
     return conv
 
 
+def _conversation_to_dict(conv: Conversation, message_count: int, last_message_preview: str | None) -> dict[str, Any]:
+    """Build a plain dict suitable for ConversationRead(**dict)."""
+    return {
+        "id": conv.id,
+        "title": conv.title,
+        "model": conv.model,
+        "message_count": message_count,
+        "last_message_preview": last_message_preview,
+        "created_at": conv.created_at,
+        "updated_at": conv.updated_at,
+    }
+
+
+def _message_stats_subqueries():
+    """Return (message_count_subq, last_message_preview_subq) correlated scalar subqueries.
+
+    Both correlate to the outer ``Conversation`` row — embed them directly in
+    ``select(Conversation, count_subq, preview_subq)``. Executed once per row,
+    both scan the indexed ``messages.conversation_id`` column.
+    """
+    msg_count = (
+        select(func.count(Message.id))
+        .where(Message.conversation_id == Conversation.id)
+        .correlate(Conversation)
+        .scalar_subquery()
+        .label("message_count")
+    )
+    last_preview = (
+        select(Message.content)
+        .where(
+            Message.conversation_id == Conversation.id,
+            Message.role == "user",
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+        .correlate(Conversation)
+        .scalar_subquery()
+        .label("last_message_preview")
+    )
+    return msg_count, last_preview
+
+
 # ── Conversation CRUD ───────────────────────────────────────────────────
 
 async def create_conversation(
     user_id: uuid.UUID,
     title: str | None = None,
     model: str | None = None,
-) -> Conversation:
+) -> dict[str, Any]:
     """Create a new empty conversation. Title auto-generated if not provided."""
     conv = Conversation(
         user_id=user_id,
@@ -56,24 +98,44 @@ async def create_conversation(
         await session.refresh(conv)
 
     logger.info("conversation_created", conv_id=str(conv.id), user_id=str(user_id))
-    return conv
+    # New conversation has no messages — no stats query needed.
+    return _conversation_to_dict(conv, message_count=0, last_message_preview=None)
 
 
 async def get_conversation(
     conv_id: uuid.UUID,
     user_id: uuid.UUID,
-) -> Conversation:
+) -> dict[str, Any]:
     """Get conversation metadata with ownership check. Raises ValueError if not found."""
     session = get_postgres_session()
     async with session:
-        conv = await _get_conv_for_user(session, conv_id, user_id)
+        msg_count_subq, last_preview_subq = _message_stats_subqueries()
+        result = await session.execute(
+            select(Conversation, msg_count_subq, last_preview_subq).where(
+                Conversation.id == conv_id,
+                Conversation.user_id == user_id,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            logger.warning(
+                "conversation_not_found",
+                conv_id=str(conv_id),
+                user_id=str(user_id),
+            )
+            raise ValueError(f"对话 {conv_id} 不存在")
+        conv = row[0]
 
     logger.info(
         "conversation_retrieved",
         conv_id=str(conv_id),
         user_id=str(user_id),
     )
-    return conv
+    return _conversation_to_dict(
+        conv,
+        message_count=row.message_count or 0,
+        last_message_preview=row.last_message_preview,
+    )
 
 
 async def list_conversations(
@@ -96,16 +158,26 @@ async def list_conversations(
         )
         total = total_result.scalar() or 0
 
-        # Page
+        # Page — include message stats as correlated scalar subqueries
+        msg_count_subq, last_preview_subq = _message_stats_subqueries()
         offset = max(0, (page - 1)) * page_size
         result = await session.execute(
-            select(Conversation)
+            select(Conversation, msg_count_subq, last_preview_subq)
             .where(and_(*conditions))
             .order_by(desc(Conversation.updated_at))
             .offset(offset)
             .limit(page_size)
         )
-        conversations = result.scalars().all()
+        rows = result.all()
+
+    items = [
+        _conversation_to_dict(
+            row[0],
+            message_count=row.message_count or 0,
+            last_message_preview=row.last_message_preview,
+        )
+        for row in rows
+    ]
 
     logger.info(
         "conversations_listed",
@@ -114,7 +186,7 @@ async def list_conversations(
         page=page,
     )
     return {
-        "conversations": list(conversations),
+        "conversations": items,
         "total": total,
     }
 
@@ -123,7 +195,7 @@ async def update_conversation_title(
     conv_id: uuid.UUID,
     user_id: uuid.UUID,
     title: str,
-) -> Conversation:
+) -> dict[str, Any]:
     """Update a conversation's title."""
     session = get_postgres_session()
     async with session:
@@ -133,8 +205,21 @@ async def update_conversation_title(
         await session.commit()
         await session.refresh(conv)
 
+        # Fetch message stats in the same session
+        msg_count_subq, last_preview_subq = _message_stats_subqueries()
+        stats_result = await session.execute(
+            select(msg_count_subq, last_preview_subq)
+            .select_from(Conversation)
+            .where(Conversation.id == conv_id)
+        )
+        stats = stats_result.one()
+
     logger.info("conversation_title_updated", conv_id=str(conv_id), title=title)
-    return conv
+    return _conversation_to_dict(
+        conv,
+        message_count=stats.message_count or 0,
+        last_message_preview=stats.last_message_preview,
+    )
 
 
 async def delete_conversation(conv_id: uuid.UUID, user_id: uuid.UUID) -> None:
