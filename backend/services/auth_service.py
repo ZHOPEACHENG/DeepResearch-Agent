@@ -10,11 +10,12 @@ Coordinates between:
 All operations are user-scoped and log structured audit events.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from jose import JWTError
 from sqlalchemy import select
 
+import backend.models  # noqa: F401 — ensure all ORM models are registered
 from backend.core.database import get_postgres_session
 from backend.core.security import (
     MAX_LOGIN_ATTEMPTS,
@@ -24,10 +25,8 @@ from backend.core.security import (
     hash_password,
     is_account_locked,
     record_failed_login,
-    reset_login_attempts,
     verify_password,
 )
-import backend.models  # noqa: F401 — ensure all ORM models are registered
 from backend.models import User
 from backend.schemas.user import TokenPair, UserRead, UserRegisterRequest
 from backend.utils.logging import get_logger
@@ -142,7 +141,7 @@ async def login_user(email: str, password: str) -> TokenPair:
 
         # Check lockout
         if is_account_locked(user.locked_until):
-            remaining = int((user.locked_until - datetime.now(timezone.utc)).total_seconds())
+            remaining = int((user.locked_until - datetime.now(UTC)).total_seconds())
             logger.warning(
                 "login_account_locked",
                 user_id=str(user.id),
@@ -167,7 +166,7 @@ async def login_user(email: str, password: str) -> TokenPair:
             raise ValueError("邮箱或密码错误")
 
         # Success — reset failed attempts
-        attempts, locked_until = reset_login_attempts()
+        attempts, locked_until = 0, None
         user.login_attempts = attempts
         user.locked_until = locked_until
         await session.commit()

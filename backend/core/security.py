@@ -8,7 +8,7 @@ Handles:
 - Account lockout tracking
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 from jose import JWTError, jwt
@@ -50,7 +50,7 @@ def create_access_token(user_id: str, token_version: int = 0) -> str:
     The ver claim is embedded for completeness but not validated on every request
     (access tokens are short-lived; revocation is enforced at refresh time).
     """
-    expire = datetime.now(timezone.utc) + timedelta(
+    expire = datetime.now(UTC) + timedelta(
         minutes=settings.jwt_access_token_expire_minutes
     )
     payload = {
@@ -58,7 +58,7 @@ def create_access_token(user_id: str, token_version: int = 0) -> str:
         "type": "access",
         "ver": token_version,
         "exp": expire,
-        "iat": datetime.now(timezone.utc),
+        "iat": datetime.now(UTC),
     }
     logger.info("access_token_created", sub=str(user_id), expires=expire.isoformat())
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
@@ -72,7 +72,7 @@ def create_refresh_token(user_id: str, token_version: int = 0) -> str:
     The ver claim binds the token to a specific token_version — when the version
     is incremented (on refresh or logout), all previously issued tokens are revoked.
     """
-    expire = datetime.now(timezone.utc) + timedelta(
+    expire = datetime.now(UTC) + timedelta(
         days=settings.jwt_refresh_token_expire_days
     )
     payload = {
@@ -80,7 +80,7 @@ def create_refresh_token(user_id: str, token_version: int = 0) -> str:
         "type": "refresh",
         "ver": token_version,
         "exp": expire,
-        "iat": datetime.now(timezone.utc),
+        "iat": datetime.now(UTC),
     }
     logger.info(
         "refresh_token_created",
@@ -136,7 +136,7 @@ def is_account_locked(locked_until: datetime | None) -> bool:
     """
     if locked_until is None:
         return False
-    if locked_until > datetime.now(timezone.utc):
+    if locked_until > datetime.now(UTC):
         return True
     return False
 
@@ -149,7 +149,7 @@ def record_failed_login(login_attempts: int, user_id: str = "") -> tuple[int, da
     """
     attempts = login_attempts + 1
     if attempts >= MAX_LOGIN_ATTEMPTS:
-        lock_until = datetime.now(timezone.utc) + timedelta(
+        lock_until = datetime.now(UTC) + timedelta(
             minutes=LOCKOUT_DURATION_MINUTES
         )
         logger.warning(
@@ -164,6 +164,3 @@ def record_failed_login(login_attempts: int, user_id: str = "") -> tuple[int, da
     return attempts, None
 
 
-def reset_login_attempts() -> tuple[int, None]:
-    """Reset failed login counter after a successful login."""
-    return 0, None

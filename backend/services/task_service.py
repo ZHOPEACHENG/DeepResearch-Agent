@@ -9,7 +9,6 @@ for atomicity.
 """
 
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import and_, func, select
@@ -17,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
 from backend.core.database import get_mongo_db, get_postgres_session
-from backend.models.report import ResearchReport
 from backend.models.task import ResearchTask
+from backend.utils.datetime import now_dt
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -149,11 +148,15 @@ async def update_task_status(
         validate_transition(old_status, new_status)
 
         # ── Concurrency guard (T042): atomic with the status write ──
+        # Lock ALL running rows for this user (not count with FOR UPDATE —
+        # PostgreSQL forbids FOR UPDATE with aggregate functions).  Counting
+        # the locked rows in Python gives the same result while keeping the
+        # serialisation guarantee: another concurrent start will block until
+        # we commit, then see our newly created running row.
         if new_status == "running":
             limit = settings.max_concurrent_tasks_per_user
-            count_result = await session.execute(
-                select(func.count())
-                .select_from(ResearchTask)
+            lock_result = await session.execute(
+                select(ResearchTask)
                 .where(
                     and_(
                         ResearchTask.user_id == user_id,
@@ -162,7 +165,7 @@ async def update_task_status(
                 )
                 .with_for_update()
             )
-            running = count_result.scalar() or 0
+            running = len(lock_result.scalars().all())
             if running >= limit:
                 logger.warning(
                     "concurrency_limit_reached",
@@ -181,7 +184,7 @@ async def update_task_status(
             )
 
         task.status = new_status
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = now_dt()
 
         for key, value in extra_fields.items():
             if hasattr(task, key):
@@ -356,7 +359,8 @@ async def delete_task(task_id: uuid.UUID, user_id: uuid.UUID) -> None:
         await session.delete(task)
         await session.commit()
 
-    # Clean up MongoDB stage outputs
+    # Clean up MongoDB stage outputs + workflow checkpoints (full lifecycle,
+    # Constitution IV — deletion cascades to all related data).
     try:
         db = get_mongo_db()
         task_id_str = str(task_id)
@@ -369,6 +373,14 @@ async def delete_task(task_id: uuid.UUID, user_id: uuid.UUID) -> None:
                     collection=coll_name,
                     deleted=result.deleted_count,
                 )
+        # Also remove the workflow checkpoint snapshot.
+        cp_result = await db["research_checkpoints"].delete_many({"task_id": task_id_str})
+        if cp_result.deleted_count:
+            logger.info(
+                "mongo_checkpoint_deleted",
+                task_id=task_id_str,
+                deleted=cp_result.deleted_count,
+            )
     except Exception:
         # MongoDB cleanup is best-effort; PG data is already gone
         logger.warning(
@@ -409,7 +421,7 @@ async def save_checkpoint(
 
         task.current_phase = phase
         task.progress_message = message
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = now_dt()
         if elapsed_seconds is not None:
             task.elapsed_seconds = elapsed_seconds
 
@@ -430,6 +442,7 @@ async def save_checkpoint(
 
 STAGE_COLLECTIONS: dict[str, str] = {
     "plan":      "research_plans",
+    "plan_rev":  "research_plans",   # revised plans share the same collection
     "retrieval": "retrieval_results",
     "analyze":   "knowledge_summaries",
     "gap":       "knowledge_gaps",
@@ -551,59 +564,3 @@ async def get_stage_outputs(
         raise
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# T042: Concurrency Control
-# ═══════════════════════════════════════════════════════════════════════
-
-async def count_running_tasks(user_id: uuid.UUID) -> int:
-    """Return the number of currently-running tasks owned by a user."""
-    session = get_postgres_session()
-    async with session:
-        result = await session.execute(
-            select(func.count())
-            .select_from(ResearchTask)
-            .where(
-                and_(
-                    ResearchTask.user_id == user_id,
-                    ResearchTask.status == "running",
-                )
-            )
-        )
-        return result.scalar() or 0
-
-
-async def enforce_concurrency(user_id: uuid.UUID) -> None:
-    """
-    Check whether the user has reached max concurrent tasks.
-
-    **Note**: This is a standalone check (no lock). For atomic enforcement
-    during status transitions, call ``update_task_status`` with
-    ``new_status="running"`` — it performs this check inside a
-    ``SELECT FOR UPDATE`` lock scope.
-
-    This function remains available for pre-flight checks (e.g.
-    validating before showing the "Start" button in the UI).
-
-    Raises:
-        RuntimeError: When the concurrency limit is reached.
-    """
-    running = await count_running_tasks(user_id)
-    limit = settings.max_concurrent_tasks_per_user
-
-    if running >= limit:
-        logger.warning(
-            "concurrency_limit_reached",
-            user_id=str(user_id),
-            running=running,
-            limit=limit,
-        )
-        raise RuntimeError(
-            f"已达到最大并发任务数 {limit}，当前有 {running} 个运行中的任务，请等待任务完成或暂停后重试"
-        )
-
-    logger.info(
-        "concurrency_check_passed",
-        user_id=str(user_id),
-        running=running,
-        limit=limit,
-    )
