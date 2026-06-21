@@ -21,11 +21,17 @@ from fastapi.responses import StreamingResponse
 from backend.api.deps import get_current_active_user
 from backend.models.user import User
 from backend.schemas.conversation import (
-    ConversationCreate, ConversationListResponse,
-    ConversationRead, ConversationUpdate, MessageListResponse, MessageRead,
-    PlanActionRequest, SendMessageRequest,
+    ConversationCreate,
+    ConversationListResponse,
+    ConversationRead,
+    ConversationUpdate,
+    GapActionRequest,
+    MessageListResponse,
+    MessageRead,
+    PlanActionRequest,
+    SendMessageRequest,
 )
-from backend.services import chat_service, conversation_service
+from backend.services import chat_service, conversation_service, research_service
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -206,7 +212,8 @@ async def send_message(
                 user_id=str(current_user.id),
                 exc_info=True,
             )
-            yield f"event: error\ndata: {json.dumps({'message': '数据流传输错误'}, ensure_ascii=False)}\n\n"
+            error_data = json.dumps({"message": "数据流传输错误"}, ensure_ascii=False)
+            yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(
         event_stream(),
@@ -279,11 +286,127 @@ async def plan_action(
     except ValueError:
         raise HTTPException(status_code=404, detail="消息不存在")
 
+    if body.action == "modify" and not (body.modifications and body.modifications.strip()):
+        raise HTTPException(status_code=422, detail="修改计划需要填写修改内容")
+
     logger.info(
         "api_plan_action",
         message_id=str(message_id),
         user_id=str(current_user.id),
         action=body.action,
     )
-    chat_service.set_plan_action(message_id, body.action, body.modifications)
+    await chat_service.set_plan_action(message_id, body.action, body.modifications)
     return {"status": "ok", "action": body.action}
+
+
+# ── T061: Gap Action (Phase 4' user-intervention) ──────────────────────
+
+@router.post("/messages/{message_id}/gap-action")
+async def gap_action(
+    message_id: UUID,
+    body: GapActionRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Answer (or skip) a research gap question.
+
+    The gap_id is carried in the gap_question message's metadata. We look it
+    up there, verify ownership, and forward the response to the waiting
+    pipeline node via ``research_service.set_gap_response``.
+    """
+    # Verify message belongs to a conversation owned by the user.
+    try:
+        conv_id = await conversation_service.get_message_conversation_id(message_id)
+        await conversation_service.get_conversation(conv_id, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="消息不存在")
+
+    # Resolve gap_id from the persisted gap_question message metadata.
+    from sqlalchemy import select as _select
+
+    from backend.core.database import get_postgres_session
+    from backend.models.conversation import Message as _Message
+
+    gap_id: str | None = None
+    session = get_postgres_session()
+    async with session:
+        result = await session.execute(
+            _select(_Message).where(_Message.id == message_id)
+        )
+        msg = result.scalar_one_or_none()
+        if msg is not None and msg.message_type == "gap_question":
+            gap_id = (msg.extra or {}).get("gap_id")
+
+    if not gap_id:
+        logger.warning(
+            "api_gap_action_no_gap_id",
+            message_id=str(message_id),
+            user_id=str(current_user.id),
+        )
+        raise HTTPException(status_code=404, detail="缺口问题不存在或已失效")
+
+    logger.info(
+        "api_gap_action",
+        message_id=str(message_id),
+        gap_id=gap_id,
+        user_id=str(current_user.id),
+        skipped=not body.response.strip(),
+    )
+    research_service.set_gap_response(gap_id, body.response)
+    return {"status": "ok", "gapId": gap_id}
+
+
+# ── Research Resume (network-interrupt recovery) ──────────────────────────
+
+
+@router.post("/{conversation_id}/research/resume")
+async def resume_research(
+    conversation_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Reconnect to an in-progress research pipeline after a network interrupt.
+
+    Returns an SSE stream that reads from the background task's event queue.
+    If there is no active pipeline the stream yields an ``inactive`` event and
+    closes — the frontend should then fall back to the persisted messages.
+    """
+    # Verify ownership
+    try:
+        await conversation_service.get_conversation(conversation_id, current_user.id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    logger.info(
+        "api_resume_research",
+        conv_id=str(conversation_id),
+        user_id=str(current_user.id),
+    )
+
+    async def event_stream():
+        try:
+            async for sse_event in chat_service.resume_research_stream(
+                conversation_id, current_user.id,
+            ):
+                event_name = sse_event["event"]
+                data_json = json.dumps(sse_event["data"], ensure_ascii=False)
+                yield f"event: {event_name}\ndata: {data_json}\n\n"
+        except Exception:
+            logger.error(
+                "api_resume_stream_error",
+                conv_id=str(conversation_id),
+                exc_info=True,
+            )
+            yield (
+                f"event: error\ndata: "
+                f"{json.dumps({'message': '恢复连接失败'}, ensure_ascii=False)}\n\n"
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

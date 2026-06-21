@@ -34,6 +34,9 @@ export const useConversationStore = defineStore('conversations', () => {
   // User-selected Deep Research toggle: 'chat' (default) or 'research'.
   // Persists across sends until the user changes it — no auto-reset.
   const mode = ref<ChatMode>('chat')
+  // Current research phase label shown while the pipeline runs
+  // (e.g. "正在检索资料"). Empty when not in a research phase.
+  const phaseLabel = ref('')
 
   let _abortController: AbortController | null = null
 
@@ -110,6 +113,7 @@ export const useConversationStore = defineStore('conversations', () => {
     isStreaming.value = true
     streamingContent.value = ''
     error.value = null
+    phaseLabel.value = ''
     let userMessageId: string | null = null
 
     _abortController = convApi.sendMessageStream(
@@ -136,9 +140,27 @@ export const useConversationStore = defineStore('conversations', () => {
             streamingContent.value += (event.data.content as string) || ''
             break
 
-          case 'plan_generated':
+          case 'plan_generated': {
+            // A revised plan reuses the same messageId — update the existing
+            // plan_card in place instead of stacking a new one.
+            const revisedId = (event.data.messageId as string) || ''
+            const existingPlan = revisedId
+              ? messages.value.find(m => m.id === revisedId && m.messageType === 'plan_card')
+              : undefined
+            if (existingPlan) {
+              existingPlan.metadata = {
+                ...existingPlan.metadata,
+                ...event.data as Record<string, unknown>,
+              }
+              // Refresh the rendered plan text too (back-end refills plan_text
+              // into the card metadata; mirror it onto content for the <pre>).
+              if (event.data.planText) {
+                existingPlan.content = event.data.planText as string
+              }
+              break
+            }
             messages.value.push({
-              id: (event.data.messageId as string) || generateUUID(),
+              id: revisedId || generateUUID(),
               conversationId: convId,
               role: 'assistant',
               content: '',
@@ -150,22 +172,119 @@ export const useConversationStore = defineStore('conversations', () => {
               createdAt: new Date().toISOString(),
             })
             break
+          }
 
-          // report_complete is a Phase 4' event (not yet emitted by backend).
-          // Handler present for forward compatibility.
-          case 'report_complete':
+          // The user accepted / modified / rejected the plan. Update the
+          // pending plan card's status so its action buttons disappear.
+          case 'plan_action': {
+            const action = (event.data.action as string) || ''
+            const taskId = (event.data.taskId as string) || ''
+            const outlet = (event.data.modify_outlet as string) || ''
+            const planMsg = [...messages.value]
+              .reverse()
+              .find(m => m.messageType === 'plan_card'
+                && (m.metadata?.taskId === taskId || m.metadata?.status === 'pending_confirmation'))
+            if (planMsg) {
+              // revise outlet already set the card to 'revised' via
+              // plan_generated — don't overwrite it. augment outlet marks
+              // 'accepted_with_notes' so the card shows the user's focus.
+              let nextStatus: string
+              if (action === 'accept') {
+                nextStatus = 'accepted'
+              } else if (action === 'modify') {
+                nextStatus = outlet === 'revise' ? 'revised' : 'accepted_with_notes'
+              } else {
+                nextStatus = 'rejected'
+              }
+              // Only advance the status forward; skip if the revise outlet
+              // already established 'revised' (avoid clobbering with itself).
+              if (nextStatus !== 'revised' || planMsg.metadata?.status !== 'revised') {
+                planMsg.metadata = {
+                  ...planMsg.metadata,
+                  status: nextStatus,
+                }
+              }
+              // Augment outlet: carry the user's focus notes into the card so
+              // the tag renders them without needing a reload.
+              if (event.data.user_focus_notes) {
+                planMsg.metadata = {
+                  ...planMsg.metadata,
+                  user_focus_notes: event.data.user_focus_notes as string,
+                }
+              }
+            }
+            break
+          }
+
+          // Phase progress labels (retrieve / analyze / synthesize / write).
+          case 'phase_change':
+            phaseLabel.value = (event.data.message as string) || ''
+            break
+
+          case 'progress':
+            // Lightweight progress tick; surface as the phase label.
+            if (event.data.message) phaseLabel.value = event.data.message as string
+            break
+
+          // Retrieval finished — backend has already persisted a
+          // retrieval_card message; mirror it in the live message list.
+          case 'retrieval_complete':
             messages.value.push({
               id: (event.data.messageId as string) || generateUUID(),
               conversationId: convId,
               role: 'assistant',
               content: '',
+              messageType: 'retrieval_card',
+              parentMessageId: parentMessageId || null,
+              metadata: event.data as Record<string, unknown>,
+              tokenCount: 0,
+              model: selectedModel.value,
+              createdAt: new Date().toISOString(),
+            })
+            break
+
+          // Analysis finished — no dedicated card; update the phase label.
+          case 'analysis_complete':
+            phaseLabel.value = '分析完成，检测知识缺口'
+            break
+
+          // A gap question requiring user input. Backend persisted a
+          // gap_question message; mirror it and keep streaming (the
+          // pipeline resumes once the user answers via actOnGap).
+          case 'gap_question':
+            messages.value.push({
+              id: (event.data.messageId as string) || generateUUID(),
+              conversationId: convId,
+              role: 'assistant',
+              content: '',
+              messageType: 'gap_question',
+              parentMessageId: parentMessageId || null,
+              metadata: event.data as Record<string, unknown>,
+              tokenCount: 0,
+              model: selectedModel.value,
+              createdAt: new Date().toISOString(),
+            })
+            break
+
+          // Final report — backend persisted a report_card message.
+          case 'report_complete':
+            messages.value.push({
+              id: (event.data.messageId as string) || generateUUID(),
+              conversationId: convId,
+              role: 'assistant',
+              content: (event.data.abstract as string) || '',
               messageType: 'report_card',
-              parentMessageId: null,
+              parentMessageId: parentMessageId || null,
               metadata: event.data as Record<string, unknown>,
               tokenCount: 0,
               model: (event.data.model as string) || selectedModel.value,
               createdAt: new Date().toISOString(),
             })
+            break
+
+          // Pipeline finished cleanly.
+          case 'complete':
+            phaseLabel.value = '研究完成'
             break
 
           case 'error':
@@ -190,11 +309,11 @@ export const useConversationStore = defineStore('conversations', () => {
               })
               streamingContent.value = ''
             }
+            phaseLabel.value = ''
             break
 
           default:
-            // Future SSE event types (retrieval_started, analysis_complete, etc.)
-            // Log for observability; no UI action needed yet.
+            // Future SSE event types — log for observability, no UI action.
             if (import.meta.env.DEV) {
               console.debug('[store] unhandled SSE event:', event.event, event.data)
             }
@@ -221,6 +340,7 @@ export const useConversationStore = defineStore('conversations', () => {
     _abortController = null
     isStreaming.value = false
     streamingContent.value = ''
+    phaseLabel.value = ''
   }
 
   function clearCurrentConversation() {
@@ -230,6 +350,7 @@ export const useConversationStore = defineStore('conversations', () => {
     currentConversation.value = null
     messages.value = []
     streamingContent.value = ''
+    phaseLabel.value = ''
     error.value = null
   }
 
@@ -241,6 +362,7 @@ export const useConversationStore = defineStore('conversations', () => {
     messages.value = []
     conversations.value = []
     streamingContent.value = ''
+    phaseLabel.value = ''
     error.value = null
     loading.value = false
   }
@@ -253,6 +375,27 @@ export const useConversationStore = defineStore('conversations', () => {
       const apiErr = extractApiError(e)
       error.value = apiErr.detail
       console.error('[store] actOnPlan failed:', e)
+      throw e
+    }
+  }
+
+  /** Answer a gap question (non-empty) or skip it (empty response). */
+  async function actOnGap(messageId: string, response: string) {
+    error.value = null
+    try {
+      await convApi.actOnGap(messageId, response)
+      // Optimistically mark the gap_question card as answered/skipped.
+      const msg = messages.value.find(m => m.id === messageId)
+      if (msg && msg.messageType === 'gap_question') {
+        msg.metadata = {
+          ...msg.metadata,
+          status: response.trim() ? 'answered' : 'skipped',
+        }
+      }
+    } catch (e: unknown) {
+      const apiErr = extractApiError(e)
+      error.value = apiErr.detail
+      console.error('[store] actOnGap failed:', e)
       throw e
     }
   }
@@ -295,11 +438,11 @@ export const useConversationStore = defineStore('conversations', () => {
     conversations, currentConversation, messages, loading, error,
     isStreaming, streamingContent, selectedModel,
     availableModels, total, page,
-    mode,
+    mode, phaseLabel,
     hasConversations,
     clearError, clearAll, fetchConversations, createConversation, fetchConversation,
     sendMessage, stopStreaming, clearCurrentConversation,
-    actOnPlan, deleteConversation,
+    actOnPlan, actOnGap, deleteConversation,
     fetchAvailableModels, setSelectedModel,
   }
 })

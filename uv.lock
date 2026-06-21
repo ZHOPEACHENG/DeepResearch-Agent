@@ -674,6 +674,11 @@ dev = [
     { name = "ruff" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "ruff" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13.0" },
@@ -705,6 +710,9 @@ requires-dist = [
     { name = "weasyprint", specifier = ">=62.0" },
 ]
 provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.15.17" }]
 
 [[package]]
 name = "distro"

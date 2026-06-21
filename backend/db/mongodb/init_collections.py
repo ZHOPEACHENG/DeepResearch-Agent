@@ -18,6 +18,7 @@ COLLECTIONS = [
     "retrieval_results",
     "knowledge_summaries",
     "knowledge_gaps",
+    "research_checkpoints",
 ]
 
 

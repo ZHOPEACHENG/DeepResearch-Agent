@@ -222,26 +222,26 @@ US1 的研究流水线依赖本阶段的 Task CRUD + 状态机 + 中间产物存
 
 ### Agent Implementations
 
-- [ ] T051 [US1] Implement Planner agent — analyze research topic, decompose into hierarchical question tree (core + sub-questions), generate search keywords with priority in `backend/agents/planner.py`
-- [ ] T052 [US1] Implement Retriever agent — execute multi-source search via SearchSource abstraction, deduplicate by URL + title similarity, normalize metadata, store in MongoDB in `backend/agents/retriever.py`
-- [ ] T053 [US1] Implement Analyzer agent — integrate multi-source results into structured knowledge summary, map each knowledge chunk to source retrieval results (citation_map) in `backend/agents/analyzer.py`
-- [ ] T054 [US1] Implement Analyzer agent gap detection — compare coverage against research questions, identify missing information/conflicting findings/uncovered sub-questions, trigger supplementary retrieval flag in `backend/agents/analyzer.py`
-- [ ] T055 [US1] Implement Synthesizer agent — resolve conflicts between sources, merge gap-fill results into main knowledge summary, prepare final structured knowledge base for report generation in `backend/agents/synthesizer.py`
-- [ ] T056 [US1] Implement Writer agent — generate report with abstract + background + sectioned body (per research question) + gap notes + full citation list; each factual claim annotated with citation index in `backend/agents/writer.py`
+- [X] T051 [US1] Implement Planner agent — analyze research topic, decompose into hierarchical question tree (core + sub-questions), generate search keywords with priority in `backend/agents/planner.py`
+- [X] T052 [US1] Implement Retriever agent — execute multi-source search via SearchSource abstraction, deduplicate by URL + title similarity, normalize metadata, store in MongoDB in `backend/agents/retriever.py`
+- [X] T053 [US1] Implement Analyzer agent — integrate multi-source results into structured knowledge summary, map each knowledge chunk to source retrieval results (citation_map) in `backend/agents/analyzer.py`
+- [X] T054 [US1] Implement Analyzer agent gap detection — compare coverage against research questions, identify missing information/conflicting findings/uncovered sub-questions, trigger supplementary retrieval flag in `backend/agents/analyzer.py`
+- [X] T055 [US1] Implement Synthesizer agent — resolve conflicts between sources, merge gap-fill results into main knowledge summary, prepare final structured knowledge base for report generation in `backend/agents/synthesizer.py`
+- [X] T056 [US1] Implement Writer agent — generate report with abstract + background + sectioned body (per research question) + gap notes + full citation list; each factual claim annotated with citation index in `backend/agents/writer.py`
 
 ### Search & Tools
 
-- [ ] T057 [P] [US1] Define SearchSource abstract interface (search(query, limit) → list[SearchResult]) in `backend/tools/search.py`
-- [ ] T058 [P] [US1] Implement WebSearchSource (general web search via API) with rate limiting in `backend/tools/search.py`
-- [ ] T059 [P] [US1] Implement ArxivSearchSource (arXiv API wrapper, extract paper metadata) in `backend/tools/search.py`
-- [ ] T060 [P] [US1] Implement SemanticScholarSearchSource (Semantic Scholar API, paper metadata + citations) in `backend/tools/search.py`
+- [X] T057 [P] [US1] Define SearchSource abstract interface (search(query, limit) → list[SearchResult]) in `backend/tools/search.py`
+- [X] T058 [P] [US1] Implement WebSearchSource (general web search via API) with rate limiting in `backend/tools/search.py`
+- [X] T059 [P] [US1] Implement ArxivSearchSource (arXiv API wrapper, extract paper metadata) in `backend/tools/search.py`
+- [X] T060 [P] [US1] Implement SemanticScholarSearchSource (Semantic Scholar API, paper metadata + citations) in `backend/tools/search.py`
 
 ### Research Orchestration
 
-- [ ] T061 [US1] Implement LangGraph research workflow — define graph nodes (plan → [plan_confirmation_node ← user action] → retrieve → analyze → [gap_question_node ← user response] → [gap loop ×3] → synthesize → write), conditional edges for gap loop; two user-intervention nodes pause via asyncio.Event (bridge to ChatService SSE), resume on user action in `backend/services/research_service.py`
-- [ ] T062 [US1] Implement workflow checkpointing — save LangGraph state to MongoDB at each node boundary, enable resume from last checkpoint in `backend/services/research_service.py`
-- [ ] T063 [US1] Implement SSE progress emitter — yield phase_change/progress/stage_complete/error/complete events during workflow execution; events bridge through ChatService (T3b-011) to the client SSE connection in `backend/services/research_service.py`
-- [ ] T064 [US1] Implement graceful failure handling — catch agent errors per phase, save partial results, mark task as failed with error_message, preserve completed stages in `backend/services/research_service.py`
+- [X] T061 [US1] Implement LangGraph research workflow — define graph nodes (plan → [plan_confirmation_node ← user action] → retrieve → analyze → [gap_question_node ← user response] → [gap loop ×3] → synthesize → write), conditional edges for gap loop; two user-intervention nodes pause via asyncio.Event (bridge to ChatService SSE), resume on user action in `backend/services/research_service.py`
+- [X] T062 [US1] Implement workflow checkpointing — save LangGraph state to MongoDB at each node boundary, enable resume from last checkpoint in `backend/services/research_service.py`
+- [X] T063 [US1] Implement SSE progress emitter — yield phase_change/progress/stage_complete/error/complete events during workflow execution; events bridge through ChatService (T3b-011) to the client SSE connection in `backend/services/research_service.py`
+- [X] T064 [US1] Implement graceful failure handling — catch agent errors per phase, save partial results, mark task as failed with error_message, preserve completed stages in `backend/services/research_service.py`
 
 ### Research API
 
@@ -258,7 +258,7 @@ US1 的研究流水线依赖本阶段的 Task CRUD + 状态机 + 中间产物存
 
 ### Report Viewing
 
-- [ ] T072 [P] [US1] Define TypeScript types for Report, ReportSection, Citation (needed by ReportCard) in `frontend/src/types/research.ts`
+- [X] T072 [P] [US1] Define TypeScript types for Report, ReportSection, Citation (needed by ReportCard) in `frontend/src/types/research.ts`
 - [X] ~~T073 [US1] Create ReportPage~~ **SUPERSEDED** by T3b-028 (ReportCard rendered inline in ChatPage)
 - [X] ~~T074 [US1] Create ReportViewer component~~ **SUPERSEDED** by T3b-028 (ReportCard handles rendering + citation clicks)
 

@@ -296,3 +296,36 @@ def set_llm_provider(provider: LLMProvider) -> None:
     """Override the global LLM provider (useful for testing)."""
     global _provider
     _provider = provider
+
+
+# ── LLM output parsing ───────────────────────────────────────────────
+
+
+def safe_json_loads(text: str) -> dict | None:
+    """Best-effort JSON extraction from an LLM response.
+
+    LLMs often wrap JSON in ```json ... ``` fences or append stray prose.
+    This strips fences, then trims to the outermost ``{ ... }`` object so a
+    trailing sentence does not break parsing. Returns ``None`` when no JSON
+    object can be recovered — callers should treat that as a parse failure
+    and apply their fallback (e.g. re-prompt or a safe default structure).
+    """
+    if not text:
+        return None
+    s = text.strip()
+    # Strip ```json ... ``` fences if present.
+    if s.startswith("```"):
+        s = s.split("\n", 1)[-1] if "\n" in s else s
+        s = s.removesuffix("```").strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    # Fall back to slicing between the first { and the last }.
+    start, end = s.find("{"), s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(s[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return None

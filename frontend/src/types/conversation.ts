@@ -43,9 +43,10 @@ export interface MessageListResponse {
 export type ChatMode = 'chat' | 'research'
 
 export type SSEEventType = 'message_created' | 'chat_chunk'
-  | 'plan_generated' | 'retrieval_started' | 'retrieval_progress'
-  | 'retrieval_complete' | 'analysis_complete' | 'gap_question'
-  | 'report_chunk' | 'report_complete' | 'error' | 'done'
+  | 'plan_generated' | 'plan_action' | 'phase_change' | 'progress'
+  | 'retrieval_started' | 'retrieval_progress' | 'retrieval_complete'
+  | 'analysis_complete' | 'gap_question' | 'report_chunk' | 'report_complete'
+  | 'complete' | 'error' | 'done'
 
 export interface SSEEvent {
   event: SSEEventType

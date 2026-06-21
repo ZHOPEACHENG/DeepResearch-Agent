@@ -67,6 +67,12 @@ async def lifespan(app: FastAPI):
     from backend.db.mongodb.init_collections import ensure_collections
     await ensure_collections()
 
+    # Register research agents with the AgentRegistry (Constitution V).
+    # Agents are discovered by name for orchestration; adding a new agent
+    # needs no change to the workflow or other agents.
+    from backend.services.research_service import register_agents
+    register_agents()
+
     # Ensure Elasticsearch indices exist (idempotent).
     # ES index creation is non-critical — the platform works without it
     # (knowledge-base search will return empty results until ES is ready).

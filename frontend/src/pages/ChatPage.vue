@@ -92,6 +92,65 @@ async function handleRejectPlan(messageId: string) {
   store.actOnPlan(messageId, 'reject')
 }
 
+// ── Modify plan dialog (B-plan modify router) ─────────────────────────
+// The user types a free-text modification; the backend classifies it as
+// augment (soft focus notes) vs revise (regenerate the plan). No mode toggle
+// here — classification is backend-side (D1).
+const modifyDialogVisible = ref(false)
+const modifyDialogText = ref('')
+const modifyDialogMessageId = ref<string | null>(null)
+
+function openModifyDialog(messageId: string) {
+  modifyDialogMessageId.value = messageId
+  modifyDialogText.value = ''
+  modifyDialogVisible.value = true
+}
+
+async function submitModify() {
+  const text = modifyDialogText.value.trim()
+  const messageId = modifyDialogMessageId.value
+  if (!text || !messageId) return
+  try {
+    await store.actOnPlan(messageId, 'modify', text)
+    modifyDialogVisible.value = false
+    modifyDialogText.value = ''
+  } catch {
+    // Keep dialog open on error so the user can retry without losing text.
+  }
+}
+
+// ── Gap question answering (Phase 4' user-intervention) ────────────────
+// One input per pending gap_question message; keyed by message id.
+const gapInputs = ref<Record<string, string>>({})
+
+async function handleAnswerGap(messageId: string) {
+  const response = (gapInputs.value[messageId] || '').trim()
+  await store.actOnGap(messageId, response)
+  delete gapInputs.value[messageId]
+  scrollToBottom()
+}
+
+async function handleSkipGap(messageId: string) {
+  await store.actOnGap(messageId, '')
+  delete gapInputs.value[messageId]
+}
+
+// Render an inline-citation marker [N] as a small clickable-looking badge.
+// Full citation popup is Phase 6 (US4); here we just style the marker so
+// users can cross-reference the citation list below the report.
+function severityTagType(sev: string): 'danger' | 'warning' | 'info' {
+  if (sev === 'critical') return 'danger'
+  if (sev === 'moderate') return 'warning'
+  return 'info'
+}
+
+function credibilityTagType(cred: string): 'success' | 'warning' | 'info' | 'danger' {
+  if (cred === 'high') return 'success'
+  if (cred === 'medium') return 'warning'
+  if (cred === 'low') return 'danger'
+  return 'info'
+}
+
 // Throttled scroll during streaming (uses rAF to avoid layout thrashing)
 let _scrollRafId = 0
 function throttledScroll() {
@@ -148,12 +207,16 @@ watch(() => store.messages.length, scrollToBottom)
               >{{ msg.content }}</pre>
               <div
                 class="plan-actions"
-                v-if="msg.metadata?.status === 'pending_confirmation'"
+                v-if="msg.metadata?.status === 'pending_confirmation' || msg.metadata?.status === 'revised'"
               >
                 <el-button type="primary" size="small" @click="store.actOnPlan(msg.id, 'accept')">接受</el-button>
-                <el-button size="small" @click="store.actOnPlan(msg.id, 'modify')">修改</el-button>
+                <el-button size="small" @click="openModifyDialog(msg.id)">修改</el-button>
                 <el-button size="small" type="danger" @click="handleRejectPlan(msg.id)">拒绝</el-button>
               </div>
+              <el-tag
+                v-else-if="msg.metadata?.status === 'accepted_with_notes'"
+                type="success" size="small" style="margin-top:8px"
+              >已采纳补充：{{ msg.metadata?.user_focus_notes || '' }}</el-tag>
             </div>
             <!-- Report card -->
             <div class="msg-card report" v-else-if="msg.messageType === 'report_card'">
@@ -178,7 +241,17 @@ watch(() => store.messages.length, scrollToBottom)
             <div class="msg-card plan" v-else-if="msg.messageType === 'plan_card'">
               <h4>研究计划</h4>
               <ul v-if="Array.isArray(msg.metadata?.questions)">
-                <li v-for="(q, idx) in (msg.metadata?.questions as string[])" :key="idx">{{ q }}</li>
+                <li v-for="(q, idx) in (msg.metadata?.questions as any[])" :key="idx">
+                  <template v-if="typeof q === 'string'">{{ q }}</template>
+                  <template v-else>
+                    {{ q.question }}
+                    <ul v-if="Array.isArray(q.sub_questions) && q.sub_questions.length">
+                      <li v-for="(sq, sidx) in q.sub_questions" :key="sidx">
+                        {{ typeof sq === 'string' ? sq : sq.question }}
+                      </li>
+                    </ul>
+                  </template>
+                </li>
               </ul>
               <p v-if="Array.isArray(msg.metadata?.keywords)">
                 <el-tag
@@ -192,22 +265,143 @@ watch(() => store.messages.length, scrollToBottom)
               >{{ msg.content }}</pre>
               <div
                 class="plan-actions"
-                v-if="msg.metadata?.status === 'pending_confirmation'"
+                v-if="msg.metadata?.status === 'pending_confirmation' || msg.metadata?.status === 'revised'"
               >
                 <el-button type="primary" size="small" @click="store.actOnPlan(msg.id, 'accept')">接受</el-button>
-                <el-button size="small" @click="store.actOnPlan(msg.id, 'modify')">修改</el-button>
+                <el-button size="small" @click="openModifyDialog(msg.id)">修改</el-button>
                 <el-button size="small" type="danger" @click="handleRejectPlan(msg.id)">拒绝</el-button>
               </div>
+              <el-tag
+                v-else-if="msg.metadata?.status === 'accepted'"
+                type="success" size="small" style="margin-top:8px"
+              >已接受</el-tag>
+              <el-tag
+                v-else-if="msg.metadata?.status === 'accepted_with_notes'"
+                type="success" size="small" style="margin-top:8px"
+              >已采纳补充：{{ msg.metadata?.user_focus_notes || '' }}</el-tag>
+              <el-tag
+                v-else-if="msg.metadata?.status === 'rejected'"
+                type="info" size="small" style="margin-top:8px"
+              >已拒绝</el-tag>
+            </div>
+            <!-- Retrieval card -->
+            <div
+              class="msg-card retrieval"
+              v-else-if="msg.messageType === 'retrieval_card'"
+            >
+              <h4>资料检索 · 第 {{ msg.metadata?.round || 1 }} 轮</h4>
+              <p class="retrieval-count">
+                共检索到 {{ msg.metadata?.sourceCount || msg.metadata?.source_count || 0 }} 条来源
+              </p>
+              <el-collapse v-if="Array.isArray(msg.metadata?.sources) && (msg.metadata?.sources as any[]).length">
+                <el-collapse-item
+                  :title="`查看 ${(msg.metadata?.sources as any[]).length} 条来源`"
+                  :name="msg.id"
+                >
+                  <ul class="source-list">
+                    <li
+                      v-for="(src, sidx) in (msg.metadata?.sources as any[])"
+                      :key="sidx"
+                    >
+                      <el-tag
+                        size="small"
+                        :type="credibilityTagType(src.credibility)"
+                        style="margin-right:6px"
+                      >{{ src.credibility }}</el-tag>
+                      <span class="source-type">{{ src.sourceType }}</span>
+                      <a
+                        v-if="src.url" :href="src.url" target="_blank"
+                        rel="noopener noreferrer" class="source-title"
+                      >{{ src.title || src.url }}</a>
+                      <span v-else class="source-title">{{ src.title }}</span>
+                    </li>
+                  </ul>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
+            <!-- Gap question card -->
+            <div
+              class="msg-card gap"
+              v-else-if="msg.messageType === 'gap_question'"
+            >
+              <h4>
+                知识缺口
+                <el-tag
+                  size="small" :type="severityTagType(String(msg.metadata?.severity || 'moderate'))"
+                  style="margin-left:8px"
+                >{{ msg.metadata?.severity || 'moderate' }}</el-tag>
+              </h4>
+              <p class="gap-desc">{{ msg.metadata?.description }}</p>
+              <div class="gap-actions" v-if="msg.metadata?.status === 'pending'">
+                <el-input
+                  v-model="gapInputs[msg.id]"
+                  type="textarea"
+                  :autosize="{ minRows: 1, maxRows: 3 }"
+                  placeholder="补充说明或额外检索要求（可选）"
+                  size="small"
+                />
+                <div class="gap-buttons">
+                  <el-button
+                    type="primary" size="small"
+                    @click="handleAnswerGap(msg.id)"
+                  >补充检索</el-button>
+                  <el-button size="small" @click="handleSkipGap(msg.id)">跳过</el-button>
+                </div>
+              </div>
+              <el-tag
+                v-else type="info" size="small" style="margin-top:8px"
+              >{{ msg.metadata?.status === 'answered' ? '已补充' : '已跳过' }}</el-tag>
             </div>
             <!-- Report card -->
             <div class="msg-card report" v-else-if="msg.messageType === 'report_card'">
-              <p>研究报告已生成</p>
+              <h4>{{ msg.metadata?.title || '研究报告' }}</h4>
+              <p v-if="msg.metadata?.abstract" class="report-abstract">
+                {{ msg.metadata?.abstract }}
+              </p>
+              <el-collapse
+                v-if="Array.isArray(msg.metadata?.sections) && (msg.metadata?.sections as any[]).length"
+              >
+                <el-collapse-item
+                  v-for="(section, sidx) in (msg.metadata?.sections as any[])"
+                  :key="sidx"
+                  :title="section.heading"
+                  :name="`${msg.id}-${sidx}`"
+                >
+                  <div class="report-section-content">{{ section.content }}</div>
+                </el-collapse-item>
+              </el-collapse>
+              <div
+                v-if="msg.metadata?.gap_notes"
+                class="report-gap-notes"
+              >
+                <h5>知识缺口说明</h5>
+                <pre style="white-space:pre-wrap">{{ msg.metadata?.gap_notes }}</pre>
+              </div>
+              <div
+                v-if="Array.isArray(msg.metadata?.citations) && (msg.metadata?.citations as any[]).length"
+                class="report-citations"
+              >
+                <h5>引用列表</h5>
+                <ol>
+                  <li
+                    v-for="(cite, cidx) in (msg.metadata?.citations as any[])"
+                    :key="cidx"
+                  >
+                    <el-tag
+                      size="small"
+                      :type="credibilityTagType(cite.credibility)"
+                      style="margin-right:6px"
+                    >{{ cite.credibility }}</el-tag>
+                    <span>{{ cite.text }}</span>
+                  </li>
+                </ol>
+              </div>
             </div>
           </div>
         </div>
       </template>
 
-      <!-- Thinking indicator: shown when waiting for first token -->
+      <!-- Thinking indicator: shown when waiting for first token / phase -->
       <div v-if="store.isStreaming && !store.streamingContent" class="message-row assistant">
         <el-avatar :size="34" class="msg-avatar ai-avatar">
           <el-icon :size="18"><Cpu /></el-icon>
@@ -216,7 +410,7 @@ watch(() => store.messages.length, scrollToBottom)
           <div class="thinking-dots">
             <span></span><span></span><span></span>
           </div>
-          <span class="thinking-text">正在思考...</span>
+          <span class="thinking-text">{{ store.phaseLabel || '正在思考...' }}</span>
         </div>
       </div>
 
@@ -294,6 +488,31 @@ watch(() => store.messages.length, scrollToBottom)
         </el-button>
       </div>
     </div>
+
+    <!-- Modify plan dialog (B-plan modify router) -->
+    <el-dialog
+      v-model="modifyDialogVisible"
+      title="修改研究计划"
+      width="520px"
+      :close-on-click-modal="false"
+    >
+      <el-input
+        v-model="modifyDialogText"
+        type="textarea"
+        :rows="4"
+        placeholder="如：多关注安全性 / 不要性能，换成成本分析"
+        maxlength="1000"
+        show-word-limit
+      />
+      <template #footer>
+        <el-button @click="modifyDialogVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :disabled="!modifyDialogText.trim()"
+          @click="submitModify"
+        >确认修改</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -436,6 +655,87 @@ watch(() => store.messages.length, scrollToBottom)
   margin-top: 12px;
   display: flex;
   gap: 8px;
+}
+
+/* ── Retrieval / Gap / Report Cards (Phase 4') ─────────────────────── */
+.msg-card h4 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.msg-card h5 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  color: #606266;
+}
+.retrieval-count {
+  color: #909399;
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+.source-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.source-list li {
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  border-bottom: 1px dashed #ebeef5;
+}
+.source-list li:last-child {
+  border-bottom: none;
+}
+.source-type {
+  color: #909399;
+  margin-right: 6px;
+  font-size: 12px;
+}
+.source-title {
+  color: #409eff;
+}
+.gap-desc {
+  margin: 4px 0 10px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.gap-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gap-buttons {
+  display: flex;
+  gap: 8px;
+}
+.report-abstract {
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 8px;
+}
+.report-section-content {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.report-gap-notes {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #ebeef5;
+  font-size: 13px;
+  color: #909399;
+}
+.report-citations {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid #ebeef5;
+}
+.report-citations ol {
+  padding-left: 20px;
+  font-size: 12px;
+  color: #606266;
+  line-height: 1.7;
 }
 
 /* ── Input Area ───────────────────────────────────────────────────── */

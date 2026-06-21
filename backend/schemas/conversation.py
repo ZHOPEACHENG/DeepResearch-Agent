@@ -73,6 +73,14 @@ class PlanActionRequest(BaseModel):
     modifications: str | None = Field(None, description="Required if action=modify")
 
 
+class GapActionRequest(BaseModel):
+    """Request body for answering a research gap question."""
+    response: str = Field(
+        ...,
+        description="用户对缺口问题的回应；空字符串表示跳过该缺口",
+    )
+
+
 class MessageRead(BaseModel):
     """Message as returned to the client."""
     id: UUID

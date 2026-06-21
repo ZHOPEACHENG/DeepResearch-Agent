@@ -66,6 +66,20 @@ export async function actOnPlan(
 }
 
 /**
+ * Answer (or skip) a research gap question.
+ * An empty response string signals "skip" to the backend.
+ */
+export async function actOnGap(
+  messageId: string, response: string,
+): Promise<{ status: string; gapId: string }> {
+  const { data } = await apiClient.post<{ status: string; gapId: string }>(
+    `/conversations/messages/${messageId}/gap-action`,
+    { response },
+  )
+  return data
+}
+
+/**
  * SSE streaming — send a message and receive streaming events.
  *
  * Uses native fetch() because axios does not support streaming responses.
