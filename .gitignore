@@ -37,5 +37,4 @@ uploads/*
 !uploads/.gitkeep
 
 # Personal design notes (not for version control)
-docs/design-decisions.md
-docs/research-pipeline.md
+docs/
