@@ -248,24 +248,6 @@ export const useConversationStore = defineStore('conversations', () => {
             phaseLabel.value = '分析完成，检测知识缺口'
             break
 
-          // A gap question requiring user input. Backend persisted a
-          // gap_question message; mirror it and keep streaming (the
-          // pipeline resumes once the user answers via actOnGap).
-          case 'gap_question':
-            messages.value.push({
-              id: (event.data.messageId as string) || generateUUID(),
-              conversationId: convId,
-              role: 'assistant',
-              content: '',
-              messageType: 'gap_question',
-              parentMessageId: parentMessageId || null,
-              metadata: event.data as Record<string, unknown>,
-              tokenCount: 0,
-              model: selectedModel.value,
-              createdAt: new Date().toISOString(),
-            })
-            break
-
           // Final report — backend persisted a report_card message.
           case 'report_complete':
             messages.value.push({
@@ -379,26 +361,6 @@ export const useConversationStore = defineStore('conversations', () => {
     }
   }
 
-  /** Answer a gap question (non-empty) or skip it (empty response). */
-  async function actOnGap(messageId: string, response: string) {
-    error.value = null
-    try {
-      await convApi.actOnGap(messageId, response)
-      // Optimistically mark the gap_question card as answered/skipped.
-      const msg = messages.value.find(m => m.id === messageId)
-      if (msg && msg.messageType === 'gap_question') {
-        msg.metadata = {
-          ...msg.metadata,
-          status: response.trim() ? 'answered' : 'skipped',
-        }
-      }
-    } catch (e: unknown) {
-      const apiErr = extractApiError(e)
-      error.value = apiErr.detail
-      console.error('[store] actOnGap failed:', e)
-      throw e
-    }
-  }
 
   async function deleteConversation(convId: string) {
     error.value = null
@@ -442,7 +404,7 @@ export const useConversationStore = defineStore('conversations', () => {
     hasConversations,
     clearError, clearAll, fetchConversations, createConversation, fetchConversation,
     sendMessage, stopStreaming, clearCurrentConversation,
-    actOnPlan, actOnGap, deleteConversation,
+    actOnPlan, deleteConversation,
     fetchAvailableModels, setSelectedModel,
   }
 })

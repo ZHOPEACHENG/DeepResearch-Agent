@@ -25,13 +25,12 @@ from backend.schemas.conversation import (
     ConversationListResponse,
     ConversationRead,
     ConversationUpdate,
-    GapActionRequest,
     MessageListResponse,
     MessageRead,
     PlanActionRequest,
     SendMessageRequest,
 )
-from backend.services import chat_service, conversation_service, research_service
+from backend.services import chat_service, conversation_service
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -297,62 +296,6 @@ async def plan_action(
     )
     await chat_service.set_plan_action(message_id, body.action, body.modifications)
     return {"status": "ok", "action": body.action}
-
-
-# ── T061: Gap Action (Phase 4' user-intervention) ──────────────────────
-
-@router.post("/messages/{message_id}/gap-action")
-async def gap_action(
-    message_id: UUID,
-    body: GapActionRequest,
-    current_user: User = Depends(get_current_active_user),
-):
-    """Answer (or skip) a research gap question.
-
-    The gap_id is carried in the gap_question message's metadata. We look it
-    up there, verify ownership, and forward the response to the waiting
-    pipeline node via ``research_service.set_gap_response``.
-    """
-    # Verify message belongs to a conversation owned by the user.
-    try:
-        conv_id = await conversation_service.get_message_conversation_id(message_id)
-        await conversation_service.get_conversation(conv_id, current_user.id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="消息不存在")
-
-    # Resolve gap_id from the persisted gap_question message metadata.
-    from sqlalchemy import select as _select
-
-    from backend.core.database import get_postgres_session
-    from backend.models.conversation import Message as _Message
-
-    gap_id: str | None = None
-    session = get_postgres_session()
-    async with session:
-        result = await session.execute(
-            _select(_Message).where(_Message.id == message_id)
-        )
-        msg = result.scalar_one_or_none()
-        if msg is not None and msg.message_type == "gap_question":
-            gap_id = (msg.extra or {}).get("gap_id")
-
-    if not gap_id:
-        logger.warning(
-            "api_gap_action_no_gap_id",
-            message_id=str(message_id),
-            user_id=str(current_user.id),
-        )
-        raise HTTPException(status_code=404, detail="缺口问题不存在或已失效")
-
-    logger.info(
-        "api_gap_action",
-        message_id=str(message_id),
-        gap_id=gap_id,
-        user_id=str(current_user.id),
-        skipped=not body.response.strip(),
-    )
-    research_service.set_gap_response(gap_id, body.response)
-    return {"status": "ok", "gapId": gap_id}
 
 
 # ── Research Resume (network-interrupt recovery) ──────────────────────────

@@ -1,188 +1,436 @@
 """
-Analyzer agent — knowledge integration + gap detection (T053, T054).
+Analyzer agent — ReAct knowledge-integration loop (T053, T054).
 
-Integrates the retrieved sources into a structured knowledge summary that
-maps every knowledge chunk back to its source retrieval results
-(``citation_map``), then compares coverage against the research questions
-to identify missing information, conflicting findings, and uncovered
-sub-questions. Sets ``trigger_supplementary_retrieval`` so the orchestration
-can decide whether to run another gap-fill round.
+Replaces the single-shot LLM call with a ReAct (Reasoning + Acting) loop
+that can search for missing information and reflect on findings before
+declaring the analysis complete. The agent is given tools (search, think,
+AnalysisComplete) and iterates until it is satisfied or hits the configured
+iteration budget.
 
 Constitution I (Research Credibility First): every synthesized statement
-in the summary carries the ids of the retrieval results it came from, so a
-later conclusion can be traced back to its sources. AI-generated analysis
-is explicitly separated from verbatim source content in the prompt.
-Constitution II: the Analyzer only integrates + detects gaps — it does not
-retrieve or write prose.
+carries retrieval-result ids in the ``citation_map`` so later conclusions
+are traceable back to their sources.
+Constitution II: the Analyzer only integrates + analyses — it searches via
+a lightweight ``execute_ephemeral_search`` call (NOT the full Retriever
+agent) and does not write prose.
 """
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
 from backend.agents.base import Agent
+from backend.core.config import settings
 from backend.services import task_service
-from backend.tools.llm import get_llm_provider, safe_json_loads
+from backend.tools.llm import LLMResponse, get_llm_provider, safe_json_loads
+from backend.tools.search import execute_ephemeral_search
 from backend.utils.datetime import now_iso
 from backend.utils.logging import get_logger
 from backend.utils.state import coerce_citation_map, conv_id
 
 logger = get_logger(__name__)
 
-_ANALYZER_SYSTEM = """You are a rigorous academic knowledge-integration analyst.
-You are given a set of retrieved sources (each with an id, title, source_type,
-and abstract/excerpt) and the research questions to answer.
+# ── Tool definitions (OpenAI function-calling format) ─────────────────
 
-Your job:
-1. Integrate the sources into a structured knowledge summary in Markdown.
-2. Group findings under the relevant research questions.
-3. Clearly separate your synthesis from direct source quotes (mark quotes).
-4. For every factual statement, record which source ids support it.
-5. Identify knowledge GAPS: questions/sub-questions with no coverage,
-   conflicting findings between sources, or missing recent data.
-
-Return STRICT JSON only (no markdown fences, no prose) with this exact shape:
-{
-  "summary_content": "Markdown text of the integrated knowledge summary",
-  "citation_map": {
-    "chunk_1": ["retrieval_result_id_a", "retrieval_result_id_b"]
-  },
-  "knowledge_gaps": [
+_ANALYZER_TOOLS = [
     {
-      "related_question_id": "q1.2",
-      "description": "what is missing and why it matters",
-      "severity": "critical|moderate|minor",
-      "suggested_query": "a search query that could fill this gap"
-    }
-  ]
-}
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": (
+                "执行一次学术/网络搜索，获取与特定查询相关的文献或网页。"
+                "每次调用针对单个查询和单个来源类型。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索查询词，应使用英文或中文学术关键词。",
+                    },
+                    "source_type": {
+                        "type": "string",
+                        "enum": ["web", "arxiv", "semantic_scholar"],
+                        "description": (
+                            "目标来源类型：web(网络), arxiv(学术预印本), "
+                            "semantic_scholar(学术文献)"
+                        ),
+                    },
+                },
+                "required": ["query", "source_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "think",
+            "description": (
+                "记录你的分析思考过程。用此工具来反思已知信息、识别剩余缺口、"
+                "规划下一步搜索策略。不要与 search 并行调用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "thought": {
+                        "type": "string",
+                        "description": "当前的分析思考内容",
+                    },
+                },
+                "required": ["thought"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "AnalysisComplete",
+            "description": (
+                "宣布分析已完成。必须调用此工具来结束分析循环。"
+                "提供完整的知识摘要、引用映射和已识别的知识缺口。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary_content": {
+                        "type": "string",
+                        "description": "Markdown 格式的完整知识整合摘要",
+                    },
+                    "citation_map": {
+                        "type": "object",
+                        "description": (
+                            "知识块 ID 到检索结果 ID 列表的映射，"
+                            '如 {"chunk_1": ["id_a", "id_b"]}'
+                        ),
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "knowledge_gaps": {
+                        "type": "array",
+                        "description": "已识别的知识缺口列表",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "related_question_id": {"type": "string"},
+                                "description": {"type": "string"},
+                                "severity": {
+                                    "type": "string",
+                                    "enum": ["critical", "moderate", "minor"],
+                                },
+                                "suggested_query": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "required": ["summary_content", "citation_map", "knowledge_gaps"],
+            },
+        },
+    },
+]
 
-Rules:
-- citation_map keys are stable chunk ids (chunk_1, chunk_2, ...); values are
-  arrays of retrieval result ids that the chunk draws from. Every chunk MUST
-  cite at least one source.
-- Only list gaps that genuinely exist given the provided sources.
-- severity: critical = a core question is unanswerable; moderate = a
-  sub-question is thin; minor = nice-to-have depth missing.
-- Output ONLY the JSON object."""
+# ── ReAct system prompt ───────────────────────────────────────────────
+
+_ANALYZER_REACT_SYSTEM = """You are a rigorous academic knowledge-integration analyst.
+You have access to three tools:
+
+1. **think(thought)** — 反思当前已知信息、识别剩余知识缺口、规划搜索策略。
+   每次调用 search 前后都应先 think。不要与 search 并行调用。
+
+2. **search(query, source_type)** — 执行一次搜索以填补具体的知识缺口。
+   source_type 可选 web（网络）、arxiv（学术预印本）、semantic_scholar（学术文献）。
+   每次搜索消耗一次迭代，请优先搜索最关键的问题。
+
+3. **AnalysisComplete(summary_content, citation_map, knowledge_gaps)** —
+   提交最终分析结果，结束分析循环。
+
+**工作流程**：
+1. 先用 think 评估初始检索结果覆盖了哪些研究问题，哪些问题的信息不足。
+2. 用 search 填补最关键的缺口。每次搜索要有明确目标。
+3. 每次搜索后用 think 整合新发现、重新评估总体覆盖情况。
+4. 当你认为知识库足以全面回答研究问题，或进一步搜索不会改善覆盖时，
+   调用 AnalysisComplete 提交最终分析。
+5. 你有一个有限的迭代次数——请高效使用。
+
+**规则**：
+- citation_map 的 key 是稳定的知识块 ID（chunk_1, chunk_2, ...），
+  value 是支持该块的检索结果 ID 列表。每个 chunk 至少引用一个来源。
+- 只列出在当前检索后真正存在的缺口。
+- severity: critical = 核心问题无法回答；moderate = 子问题信息薄弱；
+  minor = 锦上添花的深度缺失。
+- 输出语言：summary_content 使用中文，关键词使用英文/学术术语。"""
 
 
 class AnalyzerAgent(Agent):
-    """Integrate sources into a cited knowledge summary and detect gaps."""
+    """ReAct 分析循环：搜索 → 思考 → 整合 → 发现缺口 → 完成。
+
+    The agent iterates: think → search → integrate → … → AnalysisComplete.
+    Each search is ephemeral (not persisted to MongoDB) and serves only to
+    help the agent decide whether it has enough information.
+    """
 
     name = "analyzer"
-    description = "整合多源结果为带引用的知识摘要，并检测知识缺口"
+    description = "ReAct分析循环：搜索→思考→整合→发现缺口→完成"
+
+    # ── Public interface ──────────────────────────────────────────────
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
-        """
-        Build a knowledge summary + gap list from the retrieved sources.
+        """Execute the ReAct analysis loop.
 
         Reads:
-            state["task_id"]
-            state["conversation_id"]          — optional.
-            state["research_plan"]            — question tree for coverage check.
-            state["all_retrieval_results"]    — cumulative retrieval docs.
-            state["round_number"]             — labels the summary phase.
+            state["task_id"], state["research_plan"],
+            state["all_retrieval_results"]
 
         Writes:
-            state["knowledge_summary"]  — dict (KnowledgeSummary-shaped).
-            state["knowledge_gaps"]     — list[dict] (KnowledgeGap-shaped).
-            state["trigger_supplementary_retrieval"] — bool.
-
-        If there are no sources at all, a degenerate empty summary is produced
-        and every core question is flagged as a critical gap so the pipeline
-        can attempt another retrieval round rather than writing an empty report.
+            state["knowledge_summary"], state["knowledge_gaps"],
+            state["analyzer_search_log"], and extends
+            state["all_retrieval_results"] with ephemeral results.
         """
         task_id = state.get("task_id")
         if not task_id:
             logger.error("analyzer_no_task_id")
             raise ValueError("缺少 task_id，无法执行分析")
         task_id_str = str(task_id)
-        results = list(state.get("all_retrieval_results") or [])
-        round_number = int(state.get("round_number", 1) or 1)
 
+        initial_results = list(state.get("all_retrieval_results") or [])
         questions = self._question_lines(state.get("research_plan") or {})
 
         logger.info(
-            "analyzer_started",
+            "analyzer_react_started",
             task_id=task_id_str,
-            round=round_number,
-            sources=len(results),
+            sources=len(initial_results),
             questions=len(questions),
         )
 
-        if not results:
+        # ── Empty-source fallback (unchanged from pre-ReAct behaviour) ──
+        if not initial_results:
             summary, gaps = self._empty_summary_with_gaps(task_id_str, questions)
             state["knowledge_summary"] = summary
             state["knowledge_gaps"] = gaps
-            state["trigger_supplementary_retrieval"] = bool(gaps)
-            logger.warning(
-                "analyzer_no_sources",
-                task_id=task_id_str,
-                gaps=len(gaps),
-            )
+            state["analyzer_search_log"] = []
             return state
 
-        provider = get_llm_provider()
-        messages = [
-            {"role": "system", "content": _ANALYZER_SYSTEM},
-            {"role": "user", "content": self._build_user_prompt(questions, results)},
+        provider = get_llm_provider("analyzer")
+        max_iters = settings.max_analyzer_iterations
+
+        # ReAct working state.
+        all_results: list[dict] = list(initial_results)
+        search_log: list[dict] = []
+        final_summary: dict | None = None
+        final_gaps: list[dict] = []
+        iteration = 0
+
+        # Build the initial conversation.
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": _ANALYZER_REACT_SYSTEM},
+            {"role": "user", "content": self._build_react_initial_prompt(
+                questions, initial_results,
+            )},
         ]
 
-        raw = await _chat_with_empty_retry(
-            provider, messages, task_id_str, temperature=0.2, max_tokens=4096,
-        )
-
-        parsed = safe_json_loads(raw)
-        if parsed is None:
-            logger.warning(
-                "analyzer_json_parse_failed",
+        for iteration in range(1, max_iters + 1):
+            logger.info(
+                "analyzer_react_iteration",
                 task_id=task_id_str,
-                raw_len=len(raw),
-                preview=raw[:200],
+                iteration=iteration,
+                total_results=len(all_results),
             )
-            parsed = {}
-            state["analyzer_degraded"] = True
 
-        summary = self._build_summary(parsed, task_id_str, state, round_number)
-        gaps = self._build_gaps(parsed, task_id_str, state)
+            # ── Call LLM with tools ──
+            try:
+                response: LLMResponse = await provider.chat_with_tools(
+                    messages=messages,
+                    tools=_ANALYZER_TOOLS,
+                    tool_choice="auto",
+                    temperature=0.2,
+                    max_tokens=4096,
+                )
+            except Exception:
+                logger.error(
+                    "analyzer_react_llm_failed",
+                    task_id=task_id_str,
+                    iteration=iteration,
+                    exc_info=True,
+                )
+                break  # exit loop; assemble from what we have
 
-        # Persist to MongoDB (best-effort; pipeline continues if it fails).
+            # Append assistant turn to the conversation.
+            assistant_msg: dict[str, Any] = {"role": "assistant", "content": response.content}
+            if response.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {"id": tc["id"], "type": "function",
+                     "function": {"name": tc["name"], "arguments": json.dumps(
+                         tc["arguments"], ensure_ascii=False,
+                     )}}
+                    for tc in response.tool_calls
+                ]
+            messages.append(assistant_msg)
+
+            # ── No tool calls — model tried to respond in plain text ──
+            if not response.tool_calls:
+                parsed = safe_json_loads(response.content)
+                if parsed and "summary_content" in parsed:
+                    final_summary = parsed
+                    logger.info("analyzer_react_complete_via_content", task_id=task_id_str)
+                break
+
+            # ── Process tool calls ──
+            tool_results: list[dict[str, Any]] = []
+
+            for tc in response.tool_calls:
+                name = tc.get("name", "")
+                args = tc.get("arguments", {})
+
+                if name == "think":
+                    thought = str(args.get("thought", ""))
+                    tool_results.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": f"[think] {thought}",
+                    })
+                    logger.debug("analyzer_react_think", iteration=iteration, preview=thought[:80])
+
+                elif name == "search":
+                    query = str(args.get("query", ""))
+                    source_type = str(args.get("source_type", "web"))
+                    if not query:
+                        tool_results.append({
+                            "role": "tool", "tool_call_id": tc["id"],
+                            "content": "[search] 错误：查询词不能为空",
+                        })
+                        continue
+
+                    ephemeral = await execute_ephemeral_search(
+                        query=query, source_type=source_type, limit=5,
+                    )
+
+                    # Convert to dicts and add to all_results for citation support.
+                    for i, r in enumerate(ephemeral):
+                        result_dict = {
+                            "result_id": f"react_{task_id_str}_{iteration}_{i}",
+                            "task_id": task_id_str,
+                            "title": r.title,
+                            "url": r.url,
+                            "abstract": r.abstract,
+                            "excerpt": r.excerpt,
+                            "source_type": r.source_type,
+                            "authors": r.authors,
+                            "publication_date": r.publication_date,
+                            "credibility": r.credibility,
+                            "round": 0,  # mark as ReAct-internal
+                        }
+                        all_results.append(result_dict)
+
+                    search_log.append({
+                        "iteration": iteration,
+                        "query": query,
+                        "source_type": source_type,
+                        "result_count": len(ephemeral),
+                    })
+
+                    summary_line = (
+                        f"[search] query='{query}' source={source_type} "
+                        f"returned={len(ephemeral)} results"
+                    )
+                    if ephemeral:
+                        titles = "; ".join(r.title[:60] for r in ephemeral[:3])
+                        summary_line += f" | titles: {titles}"
+                    tool_results.append({
+                        "role": "tool", "tool_call_id": tc["id"],
+                        "content": summary_line,
+                    })
+
+                    logger.info(
+                        "analyzer_react_search",
+                        task_id=task_id_str,
+                        iteration=iteration,
+                        query=query[:80],
+                        source=source_type,
+                        returned=len(ephemeral),
+                    )
+
+                elif name == "AnalysisComplete":
+                    final_summary = args
+                    tool_results.append({
+                        "role": "tool", "tool_call_id": tc["id"],
+                        "content": "[AnalysisComplete] 分析完成",
+                    })
+                    logger.info(
+                        "analyzer_react_complete", task_id=task_id_str, iteration=iteration,
+                    )
+                    break  # exit tool-call processing loop (tool_results appended below)
+
+            # Append tool results to conversation.
+            messages.extend(tool_results)
+
+            # If AnalysisComplete was called, exit iteration loop.
+            if final_summary is not None:
+                break
+
+        # ── Post-loop: assemble final output ──
+        if final_summary is None:
+            logger.warning(
+                "analyzer_react_no_complete",
+                task_id=task_id_str,
+                iterations=iteration,
+            )
+            # Try to salvage from the last assistant response.
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant" and msg.get("content"):
+                    parsed = safe_json_loads(str(msg["content"])) or {}
+                    if parsed:
+                        final_summary = parsed
+                        break
+            if final_summary is None:
+                final_summary = {}
+
+        summary = self._build_react_summary(final_summary, task_id_str, state)
+        final_gaps = self._build_react_gaps(final_summary, task_id_str, state)
+
+        # Persist to MongoDB (best-effort).
         try:
             await task_service.store_stage_output(
-                uuid.UUID(task_id_str), "analyze", summary
+                uuid.UUID(task_id_str), "analyze", summary,
             )
         except Exception:
             logger.error("analyzer_store_failed", task_id=task_id_str, exc_info=True)
 
-        if gaps:
+        if final_gaps:
             try:
                 await task_service.store_stage_output(
-                    uuid.UUID(task_id_str), "gap", gaps
+                    uuid.UUID(task_id_str), "gap", final_gaps,
                 )
             except Exception:
                 logger.error("analyzer_gaps_store_failed", task_id=task_id_str, exc_info=True)
 
         state["knowledge_summary"] = summary
-        state["knowledge_gaps"] = gaps
-        # Trigger another round only when there are critical/moderate gaps
-        # AND we have not exhausted the gap-round budget (orchestration
-        # checks the budget; here we just signal intent).
-        state["trigger_supplementary_retrieval"] = any(
-            g.get("severity") in ("critical", "moderate") for g in gaps
-        )
+        state["knowledge_gaps"] = final_gaps
+        state["analyzer_search_log"] = search_log
+
+        # Add ReAct-internal results to cumulative list for citation tracing.
+        react_results = [
+            r for r in all_results
+            if r.get("result_id", "").startswith("react_")
+        ]
+        if react_results:
+            prior = list(state.get("all_retrieval_results") or [])
+            prior.extend(react_results)
+            state["all_retrieval_results"] = prior
 
         logger.info(
-            "analyzer_completed",
+            "analyzer_react_finished",
             task_id=task_id_str,
-            round=round_number,
-            gaps=len(gaps),
-            trigger=state["trigger_supplementary_retrieval"],
+            total_iterations=iteration,
+            total_searches=len(search_log),
+            total_results=len(all_results),
+            gaps=len(final_gaps),
         )
         return state
 
-    # ── Helpers ────────────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────
 
     def _question_lines(self, plan: dict[str, Any]) -> list[str]:
         """Flatten the question tree into 'qid: question' lines."""
@@ -203,44 +451,71 @@ class AnalyzerAgent(Agent):
                     out.append(f"  {sid}: {stext}")
         return out
 
-    def _build_user_prompt(self, questions: list[str], results: list[dict]) -> str:
-        q_block = "\n".join(questions) if questions else "(no explicit questions provided)"
-        src_lines = []
+    # Limit the total prompt body to avoid exceeding model context windows.
+    # Each ReAct iteration adds assistant + tool messages on top.
+    _MAX_PROMPT_CHARS = 24000
+
+    def _build_react_initial_prompt(
+        self, questions: list[str], results: list[dict],
+    ) -> str:
+        """Build the user message that kicks off the ReAct loop.
+
+        Sources are capped to stay under ``_MAX_PROMPT_CHARS`` so the
+        conversation stays within reasonable model context limits.
+        """
+        q_block = "\n".join(questions) if questions else "(无明确研究问题)"
+        prefix = f"你需要回答以下研究问题:\n{q_block}\n\n"
+        footer = (
+            "请先使用 think 评估初始结果覆盖了哪些问题、哪些问题的信息不足，"
+            "然后使用 search 查找缺失的信息。"
+            "完成后调用 AnalysisComplete 提交最终分析。"
+        )
+
+        budget = self._MAX_PROMPT_CHARS - len(prefix) - len(footer)
+        src_lines: list[str] = []
+        chars_used = 0
         for r in results:
             rid = r.get("result_id") or r.get("_id") or "(no_id)"
             title = (r.get("title") or "").strip()
             stype = r.get("source_type", "")
-            abstract = (r.get("abstract") or r.get("excerpt") or "").strip()[:1200]
-            src_lines.append(f"- id={rid} | type={stype} | title={title}\n  content: {abstract}")
+            abstract = (r.get("abstract") or r.get("excerpt") or "").strip()[:800]
+            line = f"- id={rid} | type={stype} | title={title}\n  content: {abstract}"
+            if chars_used + len(line) > budget:
+                break
+            src_lines.append(line)
+            chars_used += len(line)
+
+        omitted = len(results) - len(src_lines)
         sources_block = "\n".join(src_lines)
+        if omitted > 0:
+            sources_block += f"\n\n(另有 {omitted} 条检索结果因长度限制省略)"
+
         return (
-            f"Research questions to cover:\n{q_block}\n\n"
-            f"Retrieved sources ({len(results)}):\n{sources_block}\n\n"
-            "Produce the integrated knowledge summary, citation_map, and gaps."
+            f"{prefix}"
+            f"初始检索结果 ({len(results)} 条，展示 {len(src_lines)} 条):\n{sources_block}\n\n"
+            f"{footer}"
         )
 
-    def _build_summary(
-        self, parsed: dict, task_id_str: str, state: dict, round_number: int
+    def _build_react_summary(
+        self, parsed: dict, task_id_str: str, state: dict,
     ) -> dict[str, Any]:
+        """Normalise the parsed AnalysisComplete output into the canonical summary shape."""
         content = (parsed.get("summary_content") or "").strip()
-        citation_map = parsed.get("citation_map") or {}
-        clean_map = coerce_citation_map(citation_map)
-        cid = conv_id(state)
+        citation_map = coerce_citation_map(parsed.get("citation_map") or {})
         return {
             "task_id": task_id_str,
-            "conversation_id": cid,
-            "phase": (
-                f"gap_fill_round_{round_number - 1}"
-                if round_number > 1
-                else "initial_synthesis"
-            ),
+            "conversation_id": conv_id(state),
+            "phase": "react_analysis",
             "content": content,
             "summary_content": content,
-            "citation_map": clean_map,
+            "citation_map": citation_map,
             "generated_at": now_iso(),
         }
 
-    def _build_gaps(self, parsed: dict, task_id_str: str, state: dict) -> list[dict[str, Any]]:
+    def _build_react_gaps(
+        self, parsed: dict, task_id_str: str, state: dict,
+    ) -> list[dict[str, Any]]:
+        """Normalise gaps from the parsed AnalysisComplete output."""
         raw_gaps = parsed.get("knowledge_gaps") or []
         if not isinstance(raw_gaps, list):
             return []
@@ -254,24 +529,23 @@ class AnalyzerAgent(Agent):
             severity = (g.get("severity") or "moderate").strip()
             if severity not in ("critical", "moderate", "minor"):
                 severity = "moderate"
-            cid = conv_id(state)
             gaps.append({
                 "task_id": task_id_str,
-                "conversation_id": cid,
-                "gap_id": f"{task_id_str}_gap_{i + 1}",
+                "conversation_id": conv_id(state),
+                "gap_id": f"{task_id_str}_react_gap_{i + 1}",
                 "description": description,
                 "related_question_id": str(g.get("related_question_id") or ""),
                 "severity": severity,
                 "suggested_query": str(g.get("suggested_query") or ""),
-                "triggered_retrieval": severity in ("critical", "moderate"),
-                "retrieval_round": int(state.get("round_number", 1) or 1) + 1,
-                "retrieval_status": "pending",
+                "triggered_retrieval": False,  # no more outer gap loops
+                "retrieval_round": 0,
+                "retrieval_status": "identified_by_react",
                 "identified_at": now_iso(),
             })
         return gaps
 
     def _empty_summary_with_gaps(
-        self, task_id_str: str, questions: list[str]
+        self, task_id_str: str, questions: list[str],
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Produce an empty summary + a critical gap per core question."""
         summary = {
@@ -285,7 +559,6 @@ class AnalyzerAgent(Agent):
         }
         gaps: list[dict[str, Any]] = []
         for q in questions:
-            # q is "qid: text" or "  qid: text"
             qid, _, text = q.strip().partition(": ")
             gaps.append({
                 "task_id": task_id_str,
@@ -295,43 +568,9 @@ class AnalyzerAgent(Agent):
                 "related_question_id": qid.strip(),
                 "severity": "critical",
                 "suggested_query": text,
-                "triggered_retrieval": True,
-                "retrieval_round": 2,
-                "retrieval_status": "pending",
+                "triggered_retrieval": False,
+                "retrieval_round": 0,
+                "retrieval_status": "identified_by_react",
                 "identified_at": now_iso(),
             })
         return summary, gaps
-
-
-# ── Shared helpers ─────────────────────────────────────────────────────
-
-
-async def _chat_with_empty_retry(
-    provider, messages: list[dict], task_id_str: str,
-    temperature: float = 0.2, max_tokens: int = 4096, max_retries: int = 1,
-) -> str:
-    """Call the LLM, retrying once if the response is empty.
-
-    Some models (notably flash/small variants with strict JSON prompts)
-    occasionally return an empty string for very long inputs.  One retry
-    often resolves it; if not, we return the empty string and let the
-    caller apply its fallback.
-    """
-    for attempt in range(max_retries + 1):
-        try:
-            raw = await provider.chat(
-                messages=messages, temperature=temperature, max_tokens=max_tokens,
-            )
-        except Exception:
-            logger.error("analyzer_llm_failed", task_id=task_id_str, exc_info=True)
-            raise
-        if raw and raw.strip():
-            return raw
-        logger.warning(
-            "analyzer_llm_empty_response",
-            task_id=task_id_str,
-            attempt=attempt + 1,
-        )
-    return raw  # return the (empty) last attempt; caller handles it
-
-

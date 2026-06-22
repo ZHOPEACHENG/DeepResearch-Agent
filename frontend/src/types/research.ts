@@ -67,16 +67,6 @@ export interface RetrievalCompleteData {
   messageId?: string
 }
 
-/** Payload for the gap_question SSE event. */
-export interface GapQuestionData {
-  taskId: string
-  gapId: string
-  description: string
-  severity: GapSeverity | string
-  status: 'pending' | 'answered' | 'skipped'
-  messageId?: string
-}
-
 /** Payload for the report_complete SSE event. */
 export interface ReportCompleteData {
   messageId?: string

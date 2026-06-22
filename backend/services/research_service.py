@@ -4,19 +4,16 @@ Research orchestration — LangGraph workflow (T061–T064).
 Builds and runs the multi-agent research pipeline as a LangGraph
 ``StateGraph``:
 
-    plan → [plan_confirmation  ← user action]
-         → retrieve → analyze → [gap_question ← user response]
-         → (gap loop × MAX_GAP_ROUNDS) → synthesize → write
+    plan → [plan_confirmation ← user action]
+         → retrieve → analyze → synthesize → write
 
-Two user-intervention nodes pause via ``asyncio.Event`` and bridge through
-ChatService to the client SSE connection (T061). Workflow state is
-checkpointed to MongoDB at each node boundary so a paused/failed run can
-resume from the last completed stage (T062, Constitution III). The runner
-is an async generator that yields SSE event dicts so ChatService can stream
-phase_change / progress / stage_complete / gap_question / report_complete /
-error / complete events to the client (T063). Per-phase agent errors are
-caught, partial results are kept, and the task is marked failed with a
-descriptive message (T064, graceful degradation).
+The Analyzer uses a ReAct loop (search → think → AnalysisComplete) to
+detect and fill knowledge gaps internally, eliminating the outer gap_loop
+cycle. Workflow state is checkpointed to MongoDB at each node boundary so
+a paused/failed run can resume (T062, Constitution III). The runner is an
+async generator that yields SSE event dicts so ChatService can stream
+phase_change / retrieval_complete / analysis_complete / report_complete /
+error / complete events to the client (T063).
 
 Constitution II: orchestration depends only on the ``Agent`` contract and
 the ``AgentRegistry`` — adding/replacing an agent needs no change here.
@@ -24,10 +21,9 @@ the ``AgentRegistry`` — adding/replacing an agent needs no change here.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -37,7 +33,6 @@ from backend.agents.planner import PlannerAgent
 from backend.agents.retriever import RetrieverAgent
 from backend.agents.synthesizer import SynthesizerAgent
 from backend.agents.writer import WriterAgent
-from backend.core.config import settings
 from backend.core.database import get_mongo_db
 from backend.services import task_service
 from backend.tools.llm import get_llm_provider, safe_json_loads
@@ -57,17 +52,17 @@ _writer = WriterAgent()
 # Checkpoint collection in MongoDB (snapshots of full workflow state).
 _CHECKPOINT_COLLECTION = "research_checkpoints"
 
-# Per-gap asyncio.Event pauses, keyed by gap_id (mirrors chat_service's
-# plan-action mechanism). In-memory only — single-process, like plan actions.
-_gap_events: dict[str, asyncio.Event] = {}
-_gap_responses: dict[str, dict] = {}
-
 
 # ── State schema ───────────────────────────────────────────────────────
 
 
 class ResearchGraphState(TypedDict, total=False):
-    """Shared state passed between LangGraph nodes."""
+    """Shared state passed between LangGraph nodes.
+
+    With the Analyzer ReAct loop handling gap detection internally, the
+    outer gap_loop and its supporting fields (trigger_supplementary_retrieval,
+    gap_queries) have been removed. The DAG is now a simple linear pipeline.
+    """
 
     task_id: str
     user_id: str
@@ -76,43 +71,17 @@ class ResearchGraphState(TypedDict, total=False):
     model: str
 
     research_plan: dict | None
-    round_number: int
+    round_number: int                                  # always 1 (kept for compat)
     retrieval_results: list[dict]
     all_retrieval_results: list[dict]
     knowledge_summary: dict | None
     knowledge_gaps: list[dict]
-    trigger_supplementary_retrieval: bool
+    analyzer_search_log: list[dict]                    # ReAct search history
     synthesized_knowledge: dict | None
     final_report: dict | None
 
-    gap_queries: list[str]
     error: str | None
     current_phase: str
-
-
-# ── Gap-response bridge (T061 user-intervention) ──────────────────────
-
-
-def set_gap_response(gap_id: str, response: str) -> None:
-    """Record a user's response to a gap question and wake the waiting node."""
-    _gap_responses[gap_id] = {"response": response}
-    event = _gap_events.pop(gap_id, None)
-    if event:
-        event.set()
-    logger.info("gap_response_received", gap_id=gap_id, response=response[:80])
-
-
-async def wait_for_gap_response(gap_id: str, timeout: float = 300.0) -> dict:
-    """Block until the user answers a gap question, or timeout."""
-    event = asyncio.Event()
-    _gap_events[gap_id] = event
-    try:
-        await asyncio.wait_for(event.wait(), timeout=timeout)
-    except TimeoutError:
-        _gap_events.pop(gap_id, None)
-        logger.warning("gap_response_timeout", gap_id=gap_id)
-        return {"response": ""}
-    return _gap_responses.pop(gap_id, {"response": ""})
 
 
 # ── Checkpointing (T062) ───────────────────────────────────────────────
@@ -197,67 +166,24 @@ async def _write_node(state: ResearchGraphState) -> ResearchGraphState:
     return s  # type: ignore[return-value]
 
 
-def _should_gap_loop(state: ResearchGraphState) -> str:
-    """Conditional edge: continue the gap loop, or proceed to synthesize."""
-    trigger = bool(state.get("trigger_supplementary_retrieval"))
-    round_number = int(state.get("round_number", 1) or 1)
-    gaps = state.get("knowledge_gaps") or []
-    has_actionable = any(
-        g.get("triggered_retrieval") and g.get("suggested_query")
-        for g in gaps
-        if isinstance(g, dict)
-    )
-    if trigger and has_actionable and round_number <= settings.max_gap_rounds:
-        return "gap_loop"
-    return "synthesize"
-
-
-async def _gap_loop_node(state: ResearchGraphState) -> ResearchGraphState:
-    """Prepare the next supplementary retrieval round.
-
-    Collects suggested queries from triggered gaps and bumps the round
-    counter; the graph then routes back to ``retrieve``.
-    """
-    s: dict[str, Any] = dict(state)  # type: ignore[assignment]
-    gaps = s.get("knowledge_gaps") or []
-    s["gap_queries"] = [
-        str(g.get("suggested_query"))
-        for g in gaps
-        if isinstance(g, dict) and g.get("triggered_retrieval") and g.get("suggested_query")
-    ]
-    s["round_number"] = int(s.get("round_number", 1) or 1) + 1
-    logger.info(
-        "gap_loop_prepared",
-        task_id=str(s.get("task_id")),
-        round=s["round_number"],
-        queries=len(s["gap_queries"]),
-    )
-    return s  # type: ignore[return-value]
-
-
 def build_research_graph() -> Any:
     """Compile the LangGraph research workflow.
 
-    The plan + plan_confirmation happen in ChatService (it already owns the
-    plan-action asyncio.Event and the plan_card SSE event). This graph
-    therefore starts at ``retrieve`` and runs retrieve → analyze →
-    (gap_question → gap loop × N) → synthesize → write.
+    The plan + plan_confirmation happen in ChatService. This graph runs a
+    simple linear pipeline: retrieve → analyze → synthesize → write → END.
+
+    With the Analyzer ReAct loop handling gap detection internally, the
+    outer gap_loop cycle has been removed.
     """
     graph = StateGraph(ResearchGraphState)
     graph.add_node("retrieve", _retrieve_node)
     graph.add_node("analyze", _analyze_node)
     graph.add_node("synthesize", _synthesize_node)
     graph.add_node("write", _write_node)
-    graph.add_node("gap_loop", _gap_loop_node)
 
     graph.add_edge(START, "retrieve")
     graph.add_edge("retrieve", "analyze")
-    graph.add_conditional_edges(
-        "analyze",
-        _should_gap_loop,
-        {"gap_loop": "gap_loop", "synthesize": "synthesize"},
-    )
-    graph.add_edge("gap_loop", "retrieve")
+    graph.add_edge("analyze", "synthesize")
     graph.add_edge("synthesize", "write")
     graph.add_edge("write", END)
     return graph.compile()
@@ -275,14 +201,12 @@ _PHASE_LABELS = {
     "analyze": "正在整合分析",
     "synthesize": "正在综合冲突与缺口",
     "write": "正在生成报告",
-    "gap_loop": "正在补充检索",
 }
 
 
 async def run_pipeline(
     state: dict[str, Any],
     *,
-    wait_gap: Callable[[str], Any] | None = None,
     model: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     """
@@ -290,28 +214,23 @@ async def run_pipeline(
 
     The plan is assumed already generated and confirmed by the caller
     (ChatService). This runner drives the LangGraph graph from ``retrieve``
-    through ``write``, checkpointing at each node boundary, surfacing gap
-    questions to the user via the ``wait_gap`` callback, and emitting
-    progress/completion events.
+    through ``write`` in a simple linear pipeline (the outer gap_loop has
+    been removed; gap detection is now internal to the Analyzer's ReAct loop).
 
     Args:
         state: Initial workflow state (must include task_id, topic,
             research_plan, conversation_id, user_id).
-        wait_gap: Async callable ``(gap_id) -> {"response": str}`` used to
-            pause for user gap-question answers. If None, gaps are skipped
-            (no user intervention) — used for headless/non-interactive runs.
         model: LLM model name echoed back in report events.
 
     Yields:
-        SSE event dicts: phase_change, progress, retrieval_complete,
-        analysis_complete, gap_question, report_complete, error, complete.
+        SSE event dicts: phase_change, retrieval_complete, analysis_complete,
+        report_complete, error, complete.
     """
     task_id = state.get("task_id")
     task_id_str = str(task_id) if task_id else ""
     task_uuid = uuid.UUID(task_id_str) if task_id_str else None
     user_id = state.get("user_id")
 
-    state.setdefault("round_number", 1)
     state.setdefault("all_retrieval_results", [])
 
     logger.info("pipeline_started", task_id=task_id_str)
@@ -343,7 +262,7 @@ async def run_pipeline(
                 if isinstance(node_state, dict):
                     merged_state.update(node_state)
             async for event in _process_chunk(
-                chunk, task_id_str, task_uuid, user_id, wait_gap, model
+                chunk, task_id_str, task_uuid, user_id, model,
             ):
                 yield event
             await _save_checkpoint(merged_state)
@@ -389,10 +308,13 @@ async def _process_chunk(
     task_id_str: str,
     task_uuid: uuid.UUID | None,
     user_id: Any,
-    wait_gap: Callable[[str], Any] | None,
     model: str | None,
 ) -> AsyncGenerator[dict, None]:
-    """Translate a LangGraph update chunk into SSE events + side effects."""
+    """Translate a LangGraph update chunk into SSE events + side effects.
+
+    With the gap_loop removed, gap_question events are no longer emitted.
+    The ``wait_gap`` parameter has been removed accordingly.
+    """
     for node_name, node_state in chunk.items():
         if not isinstance(node_state, dict):
             continue
@@ -417,36 +339,12 @@ async def _process_chunk(
         elif node_name == "analyze":
             yield _sse("phase_change", {"phase": "analyzing", "message": _PHASE_LABELS["analyze"]})
             gaps = node_state.get("knowledge_gaps") or []
+            search_log = node_state.get("analyzer_search_log") or []
             yield _sse("analysis_complete", {
                 "taskId": task_id_str,
                 "gapCount": len(gaps),
+                "searchLog": search_log,
             })
-            # Surface critical/moderate gaps that triggered retrieval — these
-            # are the ones the gap loop will try to fill. If a wait_gap
-            # callback is wired, ask the user; otherwise skip silently.
-            for gap in gaps:
-                if not isinstance(gap, dict):
-                    continue
-                if not gap.get("triggered_retrieval"):
-                    continue
-                if wait_gap is not None:
-                    gap_id = gap.get("gap_id") or f"{task_id_str}_gap"
-                    yield _sse("gap_question", {
-                        "taskId": task_id_str,
-                        "gapId": gap_id,
-                        "description": gap.get("description", ""),
-                        "severity": gap.get("severity", "moderate"),
-                        "status": "pending",
-                    })
-                    try:
-                        resp = await wait_gap(gap_id)
-                    except Exception:
-                        logger.warning("gap_wait_failed", gap_id=gap_id, exc_info=True)
-                        resp = {"response": ""}
-                    # If the user explicitly skips, mark this gap not
-                    # triggered so the loop won't keep trying.
-                    if not str(resp.get("response", "")).strip():
-                        gap["triggered_retrieval"] = False
 
         elif node_name == "synthesize":
             yield _sse("phase_change", {
@@ -471,11 +369,6 @@ async def _process_chunk(
                     "gap_notes": report.get("gap_notes", ""),
                 })
 
-        elif node_name == "gap_loop":
-            yield _sse("phase_change", {
-                "phase": "retrieving",
-                "message": _PHASE_LABELS["gap_loop"],
-            })
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -526,6 +419,15 @@ async def _mark_failed(task_uuid: uuid.UUID | None, user_id: Any, message: str) 
 
 
 # ── Convenience: run the Planner (used by ChatService pre-confirmation) ─
+
+
+async def check_clarity(topic: str) -> dict[str, Any]:
+    """Check whether a user's research query is specific enough.
+
+    Delegates to ``PlannerAgent.check_clarity()``. ChatService calls this
+    before plan generation to avoid wasted pipeline runs on vague queries.
+    """
+    return await _planner.check_clarity(topic)
 
 
 async def generate_plan(state: dict[str, Any]) -> dict[str, Any]:

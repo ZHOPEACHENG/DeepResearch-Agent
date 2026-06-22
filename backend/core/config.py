@@ -21,11 +21,19 @@ class Settings(BaseSettings):
     # ── LLM ──────────────────────────────────────────────────────────
     llm_api_key: str
     llm_api_base: str = "https://api.openai.com/v1"
-    llm_model: str = "gpt-4o"
+    llm_model: str = "gpt-4o"              # Default model for most agents
     llm_embed_model: str = "text-embedding-3-small"
-    chat_model: str = "gpt-4o"          # Model for conversational replies
-    max_context_tokens: int = 128000    # Max tokens kept in conversation context window
+    chat_model: str = "gpt-4o"             # Model for conversational replies
+    summarization_model: str = "gpt-4o-mini"  # Cheaper/faster for page summarization
+    summarization_model_max_tokens: int = 1024  # Output cap for summarization calls
+    max_content_length: int = 50000        # Max chars of webpage content before summarization
+    max_context_tokens: int = 128000       # Max tokens kept in conversation context window
     available_models: list[str] = ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4-6", "claude-opus-4-8"]
+
+    # Per-agent model overrides — fall back to llm_model when None
+    planner_model: str | None = None
+    analyzer_model: str | None = None
+    writer_model: str | None = None
 
     # ── Search ───────────────────────────────────────────────────────
     search_provider: str = "tavily"
@@ -80,7 +88,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_task_execution_seconds: int = 7200  # 2 hours
     max_concurrent_tasks_per_user: int = 3
-    max_gap_rounds: int = 3
+    max_gap_rounds: int = 3                    # Deprecated — ReAct loop handles this internally
+    max_analyzer_iterations: int = 5           # ReAct loop hard cap
 
     # ── CORS ─────────────────────────────────────────────────────────
     cors_origins: list[str] = ["http://localhost:3000"]

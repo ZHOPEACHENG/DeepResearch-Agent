@@ -13,7 +13,9 @@ Spec FR-016a: up to 3 exponential-backoff retries (1s/2s/4s) on LLM failure.
 import asyncio
 import json
 from abc import ABC, abstractmethod
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 
@@ -21,6 +23,19 @@ from backend.core.config import settings
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class LLMResponse:
+    """Rich return from ``chat_with_tools()`` when tool definitions are provided.
+
+    ``content`` is the model's plain-text response (may be empty if the model
+    only returns tool calls). ``tool_calls`` is a list of parsed tool calls,
+    each with ``id``, ``name``, and ``arguments``.
+    """
+
+    content: str = ""
+    tool_calls: list[dict] = field(default_factory=list)
 
 
 class LLMProvider(ABC):
@@ -64,6 +79,22 @@ class LLMProvider(ABC):
         yield ""  # pragma: no cover — abstract, never executed
 
     @abstractmethod
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[dict] | None = None,
+        tool_choice: str = "auto",
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        model: str | None = None,
+    ) -> LLMResponse:
+        """Send a chat completion with optional function-calling tools.
+
+        Returns ``LLMResponse`` with ``content`` and any parsed ``tool_calls``.
+        """
+        ...
+
+    @abstractmethod
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """
         Generate embeddings for the given texts.
@@ -75,6 +106,25 @@ class LLMProvider(ABC):
             List of embedding vectors (each is a list of floats).
         """
         ...
+
+    @abstractmethod
+    async def summarize_page(
+        self,
+        content: str,
+        max_summary_tokens: int = 500,
+        model: str | None = None,
+    ) -> str:
+        """Summarize long webpage content into a concise abstract.
+
+        Uses a smaller/cheaper model by default (``summarization_model``).
+        """
+        ...
+
+
+_SUMMARIZE_PAGE_SYSTEM = (
+    "你是一个精确的文本摘要器。用 3-5 句简洁的中文总结以下网页内容。"
+    "只提取关键事实、发现和主张。输出语言与原文一致。不要添加观点。"
+)
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -228,6 +278,87 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
                 raise
 
+    # ── Chat with Tools ───────────────────────────────────────────────
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[dict] | None = None,
+        tool_choice: str = "auto",
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+        model: str | None = None,
+    ) -> LLMResponse:
+        """Send a chat completion with optional function-calling tools via the
+        OpenAI-compatible API. Returns a rich ``LLMResponse`` with parsed tool calls.
+
+        Retries are identical to ``chat()``: 4 total attempts, exponential backoff.
+        """
+        url = f"{self.api_base}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        effective_model = model or self.model
+        body: dict[str, Any] = {
+            "model": effective_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = tool_choice
+
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(url, headers=headers, json=body)
+                    response.raise_for_status()
+                    data = response.json()
+                msg = data["choices"][0]["message"]
+                content = msg.get("content") or ""
+                raw_tool_calls = msg.get("tool_calls") or []
+                tool_calls: list[dict] = []
+                for tc in raw_tool_calls:
+                    func = tc.get("function", {})
+                    args_str = func.get("arguments", "{}")
+                    try:
+                        arguments = json.loads(args_str)
+                    except (json.JSONDecodeError, TypeError):
+                        arguments = {}
+                    tool_calls.append({
+                        "id": tc.get("id", ""),
+                        "name": func.get("name", ""),
+                        "arguments": arguments,
+                    })
+                logger.info(
+                    "llm_chat_tools_complete",
+                    model=effective_model,
+                    tokens_used=data.get("usage", {}).get("total_tokens"),
+                    tool_calls=len(tool_calls),
+                )
+                return LLMResponse(content=content, tool_calls=tool_calls)
+            except (httpx.HTTPStatusError, httpx.RequestError, KeyError, IndexError) as e:
+                if attempt < self._MAX_RETRIES - 1:
+                    wait = self._BACKOFF_SEQUENCE[attempt]
+                    logger.warning(
+                        "llm_chat_tools_retry",
+                        model=effective_model,
+                        attempt=attempt + 1,
+                        wait=wait,
+                        error=str(e)[:200],
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                logger.error(
+                    "llm_chat_tools_failed",
+                    model=effective_model,
+                    attempts=self._MAX_RETRIES,
+                    error=str(e)[:500],
+                )
+                raise
+
     # ── Embed ────────────────────────────────────────────────────────
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
@@ -272,30 +403,103 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
                 raise
 
+    # ── Summarize page ──────────────────────────────────────────────────
 
-# ── Singleton Provider ───────────────────────────────────────────────
+    async def summarize_page(
+        self,
+        content: str,
+        max_summary_tokens: int = 500,
+        model: str | None = None,
+    ) -> str:
+        """Summarize webpage content with the summarization model.
 
-_provider: LLMProvider | None = None
+        The content is truncated to ``settings.max_content_length`` before
+        being sent to the LLM to avoid blowing through the context window.
+        """
+        effective_model = model or settings.summarization_model
+        cap = settings.max_content_length
+        truncated = content[:cap] if len(content) > cap else content
+        messages = [
+            {"role": "system", "content": _SUMMARIZE_PAGE_SYSTEM},
+            {"role": "user", "content": truncated},
+        ]
+        return await self.chat(
+            messages=messages,
+            temperature=0.1,
+            max_tokens=max_summary_tokens,
+            model=effective_model,
+        )
 
 
-def get_llm_provider() -> LLMProvider:
-    """Get or create the global LLM provider instance."""
-    global _provider
-    if _provider is None:
-        _provider = OpenAICompatibleProvider()
+# ── Named Provider Registry ─────────────────────────────────────────
+
+_providers: dict[str, LLMProvider] = {}
+
+# Map logical names to model config keys.
+_MODEL_MAP: dict[str, str | None] = {
+    "default": None,             # None means "use self.model" → settings.llm_model
+    "summarization": None,       # Will resolve to settings.summarization_model at init
+    "planner": None,
+    "analyzer": None,
+    "writer": None,
+}
+
+
+def _model_for_name(name: str) -> str | None:
+    """Resolve a logical provider name to a model name.
+
+    - ``"default"`` → ``settings.llm_model``
+    - ``"summarization"`` → ``settings.summarization_model``
+    - ``"planner"`` → ``settings.planner_model or settings.llm_model``
+    - ``"analyzer"`` → ``settings.analyzer_model or settings.llm_model``
+    - ``"writer"`` → ``settings.writer_model or settings.llm_model``
+    - unknown name → ``settings.llm_model`` (safe fallback)
+    """
+    overrides: dict[str, str | None] = {
+        "summarization": settings.summarization_model,
+        "planner": settings.planner_model,
+        "analyzer": settings.analyzer_model,
+        "writer": settings.writer_model,
+    }
+    if name in overrides:
+        return overrides[name] or settings.llm_model
+    if name == "default":
+        return settings.llm_model
+    return settings.llm_model
+
+
+def get_llm_provider(name: str = "default") -> LLMProvider:
+    """Get or create a named LLM provider instance.
+
+    Each logical name maps to a distinct model configuration so agents
+    can use appropriately-sized models without threading a ``model=``
+    parameter through every call site::
+
+        get_llm_provider("summarization")  # cheap model for page summaries
+        get_llm_provider("analyzer")       # powerful model for ReAct analysis
+
+    The plain ``get_llm_provider()`` call (no argument) returns the
+    ``"default"`` provider (``settings.llm_model``), preserving backward
+    compatibility across the entire codebase.
+    """
+    global _providers
+    if name not in _providers:
+        model = _model_for_name(name)
+        _providers[name] = OpenAICompatibleProvider(model=model)
         logger.info(
             "llm_provider_initialized",
-            model=_provider.model,
-            embed_model=_provider.embed_model,
-            api_base=_provider.api_base,
+            name=name,
+            model=model,
+            embed_model=_providers[name].embed_model,
+            api_base=_providers[name].api_base,
         )
-    return _provider
+    return _providers[name]
 
 
-def set_llm_provider(provider: LLMProvider) -> None:
-    """Override the global LLM provider (useful for testing)."""
-    global _provider
-    _provider = provider
+def set_llm_provider(provider: LLMProvider, name: str = "default") -> None:
+    """Override a named LLM provider (useful for testing)."""
+    global _providers
+    _providers[name] = provider
 
 
 # ── LLM output parsing ───────────────────────────────────────────────

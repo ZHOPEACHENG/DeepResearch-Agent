@@ -119,31 +119,10 @@ async function submitModify() {
   }
 }
 
-// ── Gap question answering (Phase 4' user-intervention) ────────────────
-// One input per pending gap_question message; keyed by message id.
-const gapInputs = ref<Record<string, string>>({})
-
-async function handleAnswerGap(messageId: string) {
-  const response = (gapInputs.value[messageId] || '').trim()
-  await store.actOnGap(messageId, response)
-  delete gapInputs.value[messageId]
-  scrollToBottom()
-}
-
-async function handleSkipGap(messageId: string) {
-  await store.actOnGap(messageId, '')
-  delete gapInputs.value[messageId]
-}
 
 // Render an inline-citation marker [N] as a small clickable-looking badge.
 // Full citation popup is Phase 6 (US4); here we just style the marker so
 // users can cross-reference the citation list below the report.
-function severityTagType(sev: string): 'danger' | 'warning' | 'info' {
-  if (sev === 'critical') return 'danger'
-  if (sev === 'moderate') return 'warning'
-  return 'info'
-}
-
 function credibilityTagType(cred: string): 'success' | 'warning' | 'info' | 'danger' {
   if (cred === 'high') return 'success'
   if (cred === 'medium') return 'warning'
@@ -318,39 +297,6 @@ watch(() => store.messages.length, scrollToBottom)
                   </ul>
                 </el-collapse-item>
               </el-collapse>
-            </div>
-            <!-- Gap question card -->
-            <div
-              class="msg-card gap"
-              v-else-if="msg.messageType === 'gap_question'"
-            >
-              <h4>
-                知识缺口
-                <el-tag
-                  size="small" :type="severityTagType(String(msg.metadata?.severity || 'moderate'))"
-                  style="margin-left:8px"
-                >{{ msg.metadata?.severity || 'moderate' }}</el-tag>
-              </h4>
-              <p class="gap-desc">{{ msg.metadata?.description }}</p>
-              <div class="gap-actions" v-if="msg.metadata?.status === 'pending'">
-                <el-input
-                  v-model="gapInputs[msg.id]"
-                  type="textarea"
-                  :autosize="{ minRows: 1, maxRows: 3 }"
-                  placeholder="补充说明或额外检索要求（可选）"
-                  size="small"
-                />
-                <div class="gap-buttons">
-                  <el-button
-                    type="primary" size="small"
-                    @click="handleAnswerGap(msg.id)"
-                  >补充检索</el-button>
-                  <el-button size="small" @click="handleSkipGap(msg.id)">跳过</el-button>
-                </div>
-              </div>
-              <el-tag
-                v-else type="info" size="small" style="margin-top:8px"
-              >{{ msg.metadata?.status === 'answered' ? '已补充' : '已跳过' }}</el-tag>
             </div>
             <!-- Report card -->
             <div class="msg-card report" v-else-if="msg.messageType === 'report_card'">
@@ -693,20 +639,6 @@ watch(() => store.messages.length, scrollToBottom)
 }
 .source-title {
   color: #409eff;
-}
-.gap-desc {
-  margin: 4px 0 10px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-.gap-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.gap-buttons {
-  display: flex;
-  gap: 8px;
 }
 .report-abstract {
   color: #606266;

@@ -44,6 +44,19 @@ _MIN_REQUEST_GAP: dict[str, float] = {
     "web": 0.0,
 }
 _last_request_at: dict[str, float] = {}
+_rate_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_rate_lock(source_name: str) -> asyncio.Lock:
+    """Return a per-source asyncio.Lock for rate-limit safety.
+
+    While each Retriever run searches a single source sequentially,
+    multiple concurrent pipeline runs (different tasks) can race on
+    ``_last_request_at``. The lock serialises the check-and-sleep block.
+    """
+    if source_name not in _rate_locks:
+        _rate_locks[source_name] = asyncio.Lock()
+    return _rate_locks[source_name]
 
 
 @dataclass
@@ -169,12 +182,17 @@ class SearchSource(ABC):
         gap = _MIN_REQUEST_GAP.get(self.name, 0.0)
         if gap <= 0:
             return
-        last = _last_request_at.get(self.name)
-        if last is not None:
-            elapsed = asyncio.get_event_loop().time() - last
-            if elapsed < gap:
-                await asyncio.sleep(gap - elapsed)
-        _last_request_at[self.name] = asyncio.get_event_loop().time()
+        lock = _get_rate_lock(self.name)
+        async with lock:
+            last = _last_request_at.get(self.name)
+            loop = asyncio.get_running_loop()
+            now = loop.time()
+            if last is not None:
+                elapsed = now - last
+                if elapsed < gap:
+                    await asyncio.sleep(gap - elapsed)
+                    now = loop.time()
+            _last_request_at[self.name] = now
 
 
 # ── Web search (Tavily) ────────────────────────────────────────────────
@@ -244,6 +262,47 @@ class WebSearchSource(SearchSource):
             returned=len(results),
         )
         return results
+
+    async def fetch_and_extract(self, url: str) -> str | None:
+        """Fetch a webpage and extract readable main-content text via trafilatura.
+
+        Returns the extracted plain text, or ``None`` if download or extraction
+        fails. Timeout: 15 s for fetch.
+        """
+        # Lazy import so trafilatura is only required when this method is called.
+        try:
+            import trafilatura  # noqa: F811
+        except ImportError:
+            logger.warning("trafilatura_not_installed")
+            return None
+
+        fetch_headers = {"User-Agent": "DeepResearch-Agent/0.1 (academic)"}
+        fetch_timeout = 15.0
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=fetch_timeout, follow_redirects=True,
+            ) as client:
+                response = await client.get(url, headers=fetch_headers)
+                response.raise_for_status()
+                downloaded = response.text
+        except Exception:
+            logger.warning("webpage_fetch_failed", url=url[:120], exc_info=True)
+            return None
+
+        try:
+            extracted = trafilatura.extract(
+                downloaded,
+                include_comments=False,
+                include_tables=True,
+                no_fallback=False,
+            )
+            if not extracted or not extracted.strip():
+                return None
+            return extracted.strip()
+        except Exception:
+            logger.warning("webpage_extract_failed", url=url[:120], exc_info=True)
+            return None
 
 
 # ── arXiv ──────────────────────────────────────────────────────────────
@@ -453,6 +512,53 @@ def get_search_sources(source_types: list[str] | None = None) -> list[SearchSour
         active=[s.name for s in sources],
     )
     return sources
+
+
+async def execute_ephemeral_search(
+    query: str,
+    source_type: str = "web",
+    limit: int = 5,
+) -> list[SearchResult]:
+    """Run a single lightweight search for the Analyzer's ReAct loop.
+
+    Unlike the full Retriever agent, this function does NOT persist results
+    to MongoDB — the results are ephemeral and only used within the current
+    ReAct iteration to help the Analyzer decide whether more searching is
+    needed.
+
+    Args:
+        query: The search query string (Chinese or English keywords).
+        source_type: One of ``"web"``, ``"arxiv"``, ``"semantic_scholar"``.
+        limit: Maximum number of results.
+
+    Returns:
+        Normalized ``SearchResult`` objects with credibility scored, or an
+        empty list on failure.
+    """
+    cls = _SOURCE_REGISTRY.get(source_type)
+    if cls is None:
+        logger.warning("ephemeral_search_unknown_source", source_type=source_type)
+        return []
+    source = cls()
+    try:
+        results = await source.search(query, limit=limit)
+        for r in results:
+            r.credibility = score_credibility(r)
+        logger.info(
+            "ephemeral_search_complete",
+            query=query[:80],
+            source=source_type,
+            returned=len(results),
+        )
+        return results
+    except Exception:
+        logger.warning(
+            "ephemeral_search_failed",
+            query=query[:80],
+            source=source_type,
+            exc_info=True,
+        )
+        return []
 
 
 def normalize_url(url: str) -> str:

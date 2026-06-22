@@ -13,7 +13,6 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-
 # ── Conversation ────────────────────────────────────────────────────────
 
 class ConversationCreate(BaseModel):
@@ -71,14 +70,6 @@ class PlanActionRequest(BaseModel):
     """Request body for acting on a research plan."""
     action: Literal["accept", "modify", "reject"]
     modifications: str | None = Field(None, description="Required if action=modify")
-
-
-class GapActionRequest(BaseModel):
-    """Request body for answering a research gap question."""
-    response: str = Field(
-        ...,
-        description="用户对缺口问题的回应；空字符串表示跳过该缺口",
-    )
 
 
 class MessageRead(BaseModel):

@@ -102,7 +102,7 @@ class WriterAgent(Agent):
             questions=len(questions),
         )
 
-        provider = get_llm_provider()
+        provider = get_llm_provider("writer")
         messages = [
             {"role": "system", "content": _WRITER_SYSTEM},
             {"role": "user", "content": self._build_prompt(

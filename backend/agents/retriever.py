@@ -7,10 +7,9 @@ persists each round's results to MongoDB via ``task_service.store_stage_output``
 Also captures a raw content snapshot (T088) and carries the credibility
 score computed by the search layer (T090).
 
-The agent supports two modes driven by workflow state:
-- Initial retrieval: uses the keywords from ``research_plan``.
-- Gap-fill retrieval: uses ``state["gap_queries"]`` (set by the Analyzer /
-  gap loop) for a supplementary round.
+The agent extracts keywords from ``research_plan`` and runs multi-source
+parallel search. With the Analyzer ReAct loop handling gap detection
+internally, the Retriever only runs once per pipeline.
 
 Constitution II: the Retriever only retrieves + stores — it does not plan,
 analyze, or write prose. It emits the ``retrieval_results`` contract.
@@ -20,6 +19,7 @@ on a concrete provider.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from difflib import SequenceMatcher
 from typing import Any
@@ -29,6 +29,8 @@ from backend.core.database import get_mongo_db
 from backend.services import task_service
 from backend.tools.search import (
     SearchResult,
+    SearchSource,
+    WebSearchSource,
     get_search_sources,
     normalize_url,
 )
@@ -56,16 +58,13 @@ class RetrieverAgent(Agent):
         Reads:
             state["task_id"]         — owning task (str|UUID).
             state["conversation_id"] — optional, for Mongo scoping.
-            state["research_plan"]   — used to derive keywords for round 1.
-            state["round_number"]    — 1 for the first round, >1 for gap fills.
-            state["gap_queries"]     — optional list[str] for supplementary rounds.
+            state["research_plan"]   — used to derive search keywords.
 
         Writes:
             state["retrieval_results"] — list[dict] of normalized, persisted
-              results (with their Mongo _id as ``result_id``), replacing the
-              previous round's value so downstream stages see the latest set.
-            state["all_retrieval_results"] — cumulative list across rounds
-              (kept for the Analyzer/Writer citation mapping).
+              results (with their Mongo _id as ``result_id``).
+            state["all_retrieval_results"] — cumulative list for the
+              Analyzer/Writer citation mapping.
 
         Raises:
             ValueError: if task_id is missing.
@@ -75,14 +74,12 @@ class RetrieverAgent(Agent):
             logger.error("retriever_no_task_id")
             raise ValueError("缺少 task_id，无法执行检索")
         task_id_str = str(task_id)
-        round_number = int(state.get("round_number", 1) or 1)
 
-        queries = self._select_queries(state, round_number)
+        queries = self._extract_queries(state)
         if not queries:
             logger.warning(
                 "retriever_no_queries",
                 task_id=task_id_str,
-                round=round_number,
             )
             state["retrieval_results"] = []
             return state
@@ -94,22 +91,18 @@ class RetrieverAgent(Agent):
             "retriever_started",
             task_id=task_id_str,
             user_id=state.get("user_id"),
-            round=round_number,
             queries=len(queries),
             sources=[s.name for s in sources],
         )
 
-        gathered: list[SearchResult] = []
-        per_source_counts: dict[str, int] = {}
-        for source in sources:
-            count_before = len(gathered)
+        async def _search_source(source: SearchSource) -> tuple[str, list[SearchResult]]:
+            """Search all queries on one source — sequential within, parallel across."""
+            results: list[SearchResult] = []
             for query in queries:
                 try:
-                    results = await source.search(query, limit=8)
-                    gathered.extend(results)
+                    r = await source.search(query, limit=8)
+                    results.extend(r)
                 except Exception:
-                    # One source/query failing must not abort the round —
-                    # record it and continue with the others.
                     logger.warning(
                         "retriever_source_query_failed",
                         task_id=task_id_str,
@@ -117,10 +110,30 @@ class RetrieverAgent(Agent):
                         query=query[:80],
                         exc_info=True,
                     )
-            per_source_counts[source.name] = len(gathered) - count_before
+            return source.name, results
+
+        tasks = [_search_source(s) for s in sources]
+        gathered_raw = await asyncio.gather(*tasks, return_exceptions=True)
+
+        gathered: list[SearchResult] = []
+        per_source_counts: dict[str, int] = {}
+        for item in gathered_raw:
+            if isinstance(item, Exception):
+                logger.warning(
+                    "retriever_source_crashed",
+                    task_id=task_id_str,
+                    error=str(item)[:200],
+                )
+                continue
+            name, results = item
+            gathered.extend(results)
+            per_source_counts[name] = len(results)
 
         deduped = self._dedup(gathered)[:_MAX_RESULTS_PER_ROUND]
-        docs = self._to_documents(deduped, task_id_str, state, round_number)
+
+        # Enrich web results with full-text fetch + LLM summarization (round 1 only).
+        enriched = await self._enrich_web_results(deduped, state)
+        docs = self._to_documents(enriched, task_id_str, state)
 
         # Persist this round to MongoDB (task_service adds task_id).
         if docs:
@@ -130,14 +143,14 @@ class RetrieverAgent(Agent):
                 logger.error(
                     "retriever_store_failed",
                     task_id=task_id_str,
-                    round=round_number,
+                    round=1,
                     exc_info=True,
                 )
                 raise
 
         # Resolve Mongo _ids back into the docs so downstream citation
         # mapping can reference them by retrieval_result_id.
-        docs = await _attach_mongo_ids(docs, task_id_str, round_number)
+        docs = await _attach_mongo_ids(docs, task_id_str)
 
         state["retrieval_results"] = docs
         # Maintain a cumulative view across rounds for the Analyzer/Writer.
@@ -149,7 +162,6 @@ class RetrieverAgent(Agent):
             "retriever_completed",
             task_id=task_id_str,
             user_id=state.get("user_id"),
-            round=round_number,
             gathered=len(gathered),
             deduped=len(deduped),
             per_source=per_source_counts,
@@ -158,13 +170,72 @@ class RetrieverAgent(Agent):
 
     # ── Helpers ────────────────────────────────────────────────────────
 
-    def _select_queries(self, state: dict[str, Any], round_number: int) -> list[str]:
-        """Pick the queries for this round: gap-fill queries, else plan keywords."""
-        if round_number > 1:
-            gap_queries = state.get("gap_queries")
-            if isinstance(gap_queries, list) and gap_queries:
-                return [str(q) for q in gap_queries if str(q).strip()]
+    async def _enrich_web_results(
+        self, results: list[SearchResult], state: dict[str, Any],
+    ) -> list[SearchResult]:
+        """For web results, fetch full page text and LLM-summarize it.
 
+        Only runs in round 1 (initial retrieval) — gap-fill rounds skip this
+        step since they need speed over depth.
+        """
+        round_number = int(state.get("round_number", 1) or 1)
+        if round_number != 1:
+            return results
+
+        web_results = [r for r in results if r.source_type == "web"]
+        if not web_results:
+            return results
+
+        from backend.tools.llm import get_llm_provider
+
+        web_source = WebSearchSource()
+        summarization_provider = get_llm_provider("summarization")
+
+        async def _fetch_and_summarize_one(r: SearchResult) -> SearchResult:
+            full_text = await web_source.fetch_and_extract(r.url)
+            if not full_text:
+                return r  # keep original snippet
+            try:
+                summary = await summarization_provider.summarize_page(full_text)
+                if summary and summary.strip():
+                    r.abstract = summary.strip()
+                    r.raw_snapshot = full_text[:5000]
+            except Exception:
+                logger.warning(
+                    "page_summarize_failed", url=r.url[:120], exc_info=True,
+                )
+            return r
+
+        enriched = await asyncio.gather(
+            *[_fetch_and_summarize_one(r) for r in web_results],
+            return_exceptions=True,
+        )
+
+        # Re-assemble: replace web results with enriched versions (or keep originals).
+        out: list[SearchResult] = []
+        for r in results:
+            if r.source_type == "web":
+                found = False
+                for item in enriched:
+                    if isinstance(item, Exception):
+                        continue
+                    if item.url == r.url:
+                        out.append(item)
+                        found = True
+                        break
+                if not found:
+                    out.append(r)  # enrichment failed, keep original
+            else:
+                out.append(r)
+        return out
+
+    def _extract_queries(self, state: dict[str, Any]) -> list[str]:
+        """Extract search queries from the research plan's keywords.
+
+        Pure extraction — no LLM calls and no gap-fill heuristics. With the
+        Analyzer ReAct loop handling gap detection internally, the Retriever
+        only runs once per pipeline (round 1).
+        """
         plan = state.get("research_plan") or {}
         keywords = plan.get("search_keywords") if isinstance(plan, dict) else None
         if isinstance(keywords, list):
@@ -205,9 +276,12 @@ class RetrieverAgent(Agent):
         results: list[SearchResult],
         task_id_str: str,
         state: dict[str, Any],
-        round_number: int,
     ) -> list[dict[str, Any]]:
-        """Convert SearchResults into Mongo-ready RetrievalResult documents."""
+        """Convert SearchResults into Mongo-ready RetrievalResult documents.
+
+        With the Analyzer ReAct loop handling gap detection internally, the
+        Retriever only runs once per pipeline (round 1).
+        """
         conv_id = state.get("conversation_id")
         docs: list[dict[str, Any]] = []
         for r in results:
@@ -215,8 +289,8 @@ class RetrieverAgent(Agent):
                 "result_id": "",  # filled in after insert from Mongo _id
                 "task_id": task_id_str,
                 "conversation_id": str(conv_id) if conv_id else None,
-                "round": round_number,
-                "round_number": round_number,
+                "round": 1,
+                "round_number": 1,
                 "retrieved_at": now_iso(),
                 **r.to_dict(),
             })
@@ -224,7 +298,7 @@ class RetrieverAgent(Agent):
 
 
 async def _attach_mongo_ids(
-    docs: list[dict[str, Any]], task_id_str: str, round_number: int
+    docs: list[dict[str, Any]], task_id_str: str
 ) -> list[dict[str, Any]]:
     """Backfill ``result_id`` with the Mongo ObjectId string of each stored doc.
 
@@ -236,20 +310,28 @@ async def _attach_mongo_ids(
     """
     if not docs:
         return docs
-    db = get_mongo_db()
-    cursor = db["retrieval_results"].find(
-        {"task_id": task_id_str, "round_number": round_number}
-    )
-    stored = await cursor.to_list(length=len(docs) * 2)
-    # Index by (url, title) for a fast match.
-    by_key: dict[tuple[str, str], str] = {}
-    for d in stored:
-        url_key = (d.get("url") or "").strip().lower()
-        title_key = (d.get("title") or "").strip().lower()
-        by_key[(url_key, title_key)] = str(d["_id"])
-    for doc in docs:
-        key = ((doc.get("url") or "").strip().lower(), (doc.get("title") or "").strip().lower())
-        oid = by_key.get(key)
-        if oid:
-            doc["result_id"] = oid
+    try:
+        db = get_mongo_db()
+        cursor = db["retrieval_results"].find(
+            {"task_id": task_id_str, "round_number": 1}
+        )
+        stored = await cursor.to_list(length=len(docs) * 2)
+        # Index by (url, title) for a fast match.
+        by_key: dict[tuple[str, str], str] = {}
+        for d in stored:
+            url_key = (d.get("url") or "").strip().lower()
+            title_key = (d.get("title") or "").strip().lower()
+            by_key[(url_key, title_key)] = str(d["_id"])
+        for doc in docs:
+            key = ((doc.get("url") or "").strip().lower(), (doc.get("title") or "").strip().lower())
+            oid = by_key.get(key)
+            if oid:
+                doc["result_id"] = oid
+    except Exception:
+        logger.warning(
+            "retriever_attach_mongo_ids_failed",
+            task_id=task_id_str,
+            doc_count=len(docs),
+            exc_info=True,
+        )
     return docs

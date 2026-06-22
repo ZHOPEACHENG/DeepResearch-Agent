@@ -93,11 +93,49 @@ Rules:
 - Output ONLY the JSON object."""
 
 
+_CLARITY_SYSTEM = (
+    "你用来判断用户的查询是否足够具体以开展研究。"
+    "如果查询清晰、具体且可研究，返回 is_clear=true。"
+    "如果它模糊、歧义或范围太广，返回 is_clear=false，"
+    "并提供一句简洁的中文澄清问题来帮助缩小范围。"
+    "只返回严格 JSON："
+    '{"is_clear": true, "clarifying_question": ""} '
+    "或 "
+    '{"is_clear": false, "clarifying_question": "你的问题是..."}。'
+    "不要输出任何其他内容。"
+)
+
+
 class PlannerAgent(Agent):
     """Decompose a topic into a question tree + prioritized keywords."""
 
     name = "planner"
     description = "分析研究主题，分解为层级问题树并生成带优先级的搜索关键词"
+
+    async def check_clarity(self, topic: str) -> dict[str, Any]:
+        """Check whether a user's research query is specific enough.
+
+        Returns ``{"is_clear": bool, "clarifying_question": str}``.
+        LLM failures default to ``is_clear=True`` to avoid blocking the pipeline.
+        """
+        provider = get_llm_provider("planner")
+        messages = [
+            {"role": "system", "content": _CLARITY_SYSTEM},
+            {"role": "user", "content": f"研究查询：{topic}"},
+        ]
+        try:
+            raw = await provider.chat(messages=messages, temperature=0.0, max_tokens=128)
+        except Exception:
+            logger.warning("clarity_check_llm_failed", exc_info=True)
+            return {"is_clear": True, "clarifying_question": ""}
+
+        parsed = safe_json_loads(raw)
+        if not parsed or not isinstance(parsed, dict):
+            return {"is_clear": True, "clarifying_question": ""}
+        return {
+            "is_clear": bool(parsed.get("is_clear", True)),
+            "clarifying_question": str(parsed.get("clarifying_question", "") or ""),
+        }
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """
@@ -131,7 +169,7 @@ class PlannerAgent(Agent):
             # Revise mode: inherit the original topic (revision keeps the
             # subject; only the research direction changes).
             topic = plan_to_revise.get("topic") or state.get("topic") or ""
-            provider = get_llm_provider()
+            provider = get_llm_provider("planner")
             messages = [
                 {"role": "system", "content": _PLANNER_REVISE_SYSTEM},
                 {"role": "user", "content": (
@@ -151,7 +189,7 @@ class PlannerAgent(Agent):
             if not topic or not str(topic).strip():
                 logger.error("planner_no_topic", task_id=state.get("task_id"))
                 raise ValueError("研究主题为空，无法生成研究计划")
-            provider = get_llm_provider()
+            provider = get_llm_provider("planner")
             messages = [
                 {"role": "system", "content": _PLANNER_SYSTEM},
                 {"role": "user", "content": f"研究主题：{topic}"},

@@ -526,12 +526,27 @@ async def _handle_research(
     task_id_str = str(task.id)
     logger.info("research_task_created", task_id=str(task.id), conv_id=str(conversation_id))
 
+    # Pre-clarification: check whether the query is specific enough.
+    clarifying_question: str | None = None
+    try:
+        clarity = await research_service.check_clarity(content)
+        if not clarity.get("is_clear") and clarity.get("clarifying_question"):
+            clarifying_question = clarity["clarifying_question"]
+            logger.info(
+                "clarification_needed",
+                task_id=task_id_str,
+                question=clarifying_question[:80],
+            )
+    except Exception:
+        logger.warning("clarity_check_failed", exc_info=True)
+
     plan_state = {
         "task_id": task_id_str,
         "user_id": str(user_id),
         "conversation_id": str(conversation_id),
         "topic": content,
         "model": model,
+        "clarifying_question": clarifying_question,
     }
 
     # Generate the plan via the Planner agent.
@@ -546,6 +561,8 @@ async def _handle_research(
     keywords = _plan_keywords_for_card(plan)
     plan_text = json.dumps(plan, ensure_ascii=False, indent=2)
 
+    card_status = "needs_clarification" if clarifying_question else "pending_confirmation"
+
     # Save plan_card message.
     plan_msg = await conversation_service.save_message(
         conversation_id=conversation_id,
@@ -559,7 +576,8 @@ async def _handle_research(
             "questions": questions,
             "keywords": keywords,
             "priority_order": [q["id"] for q in questions],
-            "status": "pending_confirmation",
+            "status": card_status,
+            "clarifying_question": clarifying_question,
             "mode": mode,
         },
     )
@@ -570,15 +588,17 @@ async def _handle_research(
         task_id=task_id_str,
         parent_message_id=str(user_message_id),
         model=model,
+        clarifying=bool(clarifying_question),
     )
 
     yield _sse("plan_generated", {
         "messageId": str(plan_msg.id),
         "taskId": task_id_str,
-        "status": "pending_confirmation",
+        "status": card_status,
         "questions": questions,
         "keywords": keywords,
         "planText": plan_text,
+        "clarifyingQuestion": clarifying_question,
         "model": model,
     })
 
@@ -622,14 +642,29 @@ async def _handle_research(
         logger.warning("plan_action_timeout", task_id=task_id_str)
         return
 
+    # When a clarifying question was asked, treat any user modification as a
+    # full revision — the plan was generated from a vague query and must be
+    # rebuilt with the user's clarification.
+    if clarifying_question and action_type == "modify":
+        action_type = "revise_forced"
+
     # accept → run the pipeline with the original plan.
     # modify → B-plan router: classify the modification (augment vs revise),
-    #   then dispatch to the matching outlet. Replaces the old "fold notes into
-    #   topic" dead code (no downstream agent ever read topic post-plan).
+    #   then dispatch to the matching outlet.
     if action_type == "modify":
         async for event in _route_modify(
             action, plan, plan_state, plan_msg, task_id_str,
             conversation_id, user_message_id, model, mode,
+        ):
+            yield event
+        return
+
+    if action_type == "revise_forced":
+        modifications = str(action.get("modifications", "") or "").strip()
+        async for event in _revise_outlet(
+            plan, plan_state, plan_msg, task_id_str,
+            conversation_id, user_message_id, model, mode,
+            modifications=modifications,
         ):
             yield event
         return
@@ -664,7 +699,7 @@ async def _run_pipeline_from_plan(
     }
 
     async for event in research_service.run_pipeline(
-        pipeline_state, wait_gap=research_service.wait_for_gap_response, model=model,
+        pipeline_state, model=model,
     ):
         msg_id = await _mirror_pipeline_event(
             event, conversation_id, user_message_id, model, mode,
@@ -872,24 +907,6 @@ async def _mirror_pipeline_event(
                     "round": data.get("round", 1),
                     "source_count": data.get("sourceCount", 0),
                     "sources": data.get("sources", []),
-                    "mode": mode,
-                },
-            )
-            return msg.id
-        elif name == "gap_question":
-            msg = await conversation_service.save_message(
-                conversation_id=conversation_id,
-                role="assistant",
-                content="",
-                message_type="gap_question",
-                parent_message_id=parent_message_id,
-                model=model,
-                metadata={
-                    "task_id": data.get("taskId"),
-                    "gap_id": data.get("gapId"),
-                    "description": data.get("description", ""),
-                    "severity": data.get("severity", "moderate"),
-                    "status": "pending",
                     "mode": mode,
                 },
             )
