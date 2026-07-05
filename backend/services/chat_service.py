@@ -114,16 +114,44 @@ async def resume_gap_action(
     conversation_id: uuid.UUID, task_id: str, action: str,
 ) -> None:
     """Resume the research graph after a gap_confirm interrupt."""
-    logger.info("resume_gap", task_id=task_id, action=action)
+    logger.info("resume_gap", task_id=task_id, action=action, conv_id=str(conversation_id))
+
+    # 后续 retrieval_card / report_card 需要 parent_message_id 才能落库
+    # （messages.parent_message_id 有外键约束）。这里查最近一条 gap_question
+    # 消息，继承它的 parent（即原始 user message），把 UUID(int=0) 占位替换掉。
+    parent_message_id = await _resolve_gap_parent(conversation_id)
+
     graph = get_research_graph()
     config = {"configurable": {"thread_id": str(conversation_id)}}
     async for chunk in graph.astream(
         Command(resume={"action": action}), config, stream_mode="updates",
     ):
         async for _ in _process_research_chunk(
-            chunk, conversation_id, uuid.UUID(int=0), None, "research", task_id,
+            chunk, conversation_id, parent_message_id, None, "research", task_id,
         ):
             pass  # messages persisted to DB, no SSE client connected
+
+
+async def _resolve_gap_parent(conversation_id: uuid.UUID) -> uuid.UUID:
+    """Find the original user message id for an interrupted research thread.
+
+    Looks for the most recent gap_question message and returns its
+    parent_message_id. Falls back to the most recent user message, then
+    to a nil UUID (only if no messages exist at all — the FK will still
+    reject it, but that path shouldn't occur in practice).
+    """
+    try:
+        result = await conversation_service.get_messages(conversation_id, limit=50)
+    except Exception:
+        logger.warning("gap_parent_lookup_failed", conv_id=str(conversation_id), exc_info=True)
+        return uuid.UUID(int=0)
+    for m in reversed(result.get("items", [])):
+        if m.message_type == "gap_question" and m.parent_message_id:
+            return m.parent_message_id
+    for m in reversed(result.get("items", [])):
+        if m.role == "user":
+            return m.id
+    return uuid.UUID(int=0)
 
 
 # ── Chat mode ──────────────────────────────────────────────────────────
