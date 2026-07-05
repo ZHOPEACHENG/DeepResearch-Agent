@@ -190,7 +190,17 @@ async def _run_research(
     task_id_str = str(task.id)
 
     # ── Clarity check (decision 1: planner outside graph) ──
-    clarity = await research_service.check_clarity(content)
+    try:
+        clarity = await research_service.check_clarity(content)
+    except Exception as e:
+        if _is_thinking_conflict(e):
+            yield _sse("error", {
+                "message": "深度思考模式不支持结构化输出，请关闭深度思考开关后重试",
+                "code": "THINKING_CONFLICT", "taskId": task_id_str,
+            })
+            return
+        raise
+
     if not clarity.get("is_clear"):
         yield _sse("plan_generated", {
             "messageId": "",
@@ -208,7 +218,16 @@ async def _run_research(
         "topic": content, "task_id": task_id_str,
         "user_id": str(user_id), "conversation_id": str(conversation_id),
     }
-    plan_state = await planner.run(plan_state)
+    try:
+        plan_state = await planner.run(plan_state)
+    except Exception as e:
+        if _is_thinking_conflict(e):
+            yield _sse("error", {
+                "message": "深度思考模式不支持结构化输出，请关闭深度思考开关后重试",
+                "code": "THINKING_CONFLICT", "taskId": task_id_str,
+            })
+            return
+        raise
     plan = plan_state.get("research_plan") or {}
 
     # Persist plan to MongoDB
@@ -262,13 +281,31 @@ async def _run_research(
 
     # ── Handle modify (decision 11: B-plan router) ──
     if action_type == "modify":
-        modifications = (action.get("modifications") or "").strip()
-        mode_decision = await research_service.classify_modification(plan, modifications)
+        try:
+            modifications = (action.get("modifications") or "").strip()
+            mode_decision = await research_service.classify_modification(plan, modifications)
+        except Exception as e:
+            if _is_thinking_conflict(e):
+                yield _sse("error", {
+                    "message": "深度思考模式不支持结构化输出，请关闭深度思考开关后重试",
+                    "code": "THINKING_CONFLICT", "taskId": task_id_str,
+                })
+                return
+            raise
         if mode_decision == "revise":
-            # Revise: re-run planner in revise mode
-            plan_state["plan_to_revise"] = plan
-            plan_state["modification_directive"] = modifications
-            plan_state = await planner.run(plan_state)
+            try:
+                # Revise: re-run planner in revise mode
+                plan_state["plan_to_revise"] = plan
+                plan_state["modification_directive"] = modifications
+                plan_state = await planner.run(plan_state)
+            except Exception as e:
+                if _is_thinking_conflict(e):
+                    yield _sse("error", {
+                        "message": "深度思考模式不支持结构化输出，请关闭深度思考开关后重试",
+                        "code": "THINKING_CONFLICT", "taskId": task_id_str,
+                    })
+                    return
+                raise
             plan = plan_state.get("research_plan") or {}
             # Re-emit revised plan_card on same message
             questions = [
