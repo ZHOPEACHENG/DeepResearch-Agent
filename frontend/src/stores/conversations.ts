@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { ElMessage } from 'element-plus'
 import type {
   ConversationSummary, MessageDetail, SSEEvent, PlanAction, ChatMode,
 } from '@/types/conversation'
@@ -34,6 +35,7 @@ export const useConversationStore = defineStore('conversations', () => {
   // User-selected Deep Research toggle: 'chat' (default) or 'research'.
   // Persists across sends until the user changes it — no auto-reset.
   const mode = ref<ChatMode>('chat')
+  const deepThinking = ref(false)
   // Current research phase label shown while the pipeline runs
   // (e.g. "正在检索资料"). Empty when not in a research phase.
   const phaseLabel = ref('')
@@ -117,7 +119,7 @@ export const useConversationStore = defineStore('conversations', () => {
     let userMessageId: string | null = null
 
     _abortController = convApi.sendMessageStream(
-      convId, content, parentMessageId ?? null, selectedModel.value, mode.value,
+      convId, content, parentMessageId ?? null, selectedModel.value, mode.value, deepThinking.value,
       (event: SSEEvent) => {
         switch (event.event) {
           case 'message_created':
@@ -291,6 +293,13 @@ export const useConversationStore = defineStore('conversations', () => {
           case 'error':
             error.value = (event.data.message as string) || '发生未知错误'
             isStreaming.value = false
+            if ((event.data.code as string) === 'THINKING_CONFLICT') {
+              deepThinking.value = false
+              ElMessage.warning({
+                message: '深度思考模式与结构化输出不兼容，已自动关闭深度思考开关，请重试',
+                duration: 5000,
+              })
+            }
             console.error('[store] SSE error event:', event.data)
             break
 
@@ -419,7 +428,7 @@ export const useConversationStore = defineStore('conversations', () => {
     conversations, currentConversation, messages, loading, error,
     isStreaming, streamingContent, selectedModel,
     availableModels, total, page,
-    mode, phaseLabel,
+    mode, deepThinking, phaseLabel,
     hasConversations,
     clearError, clearAll, fetchConversations, createConversation, fetchConversation,
     sendMessage, stopStreaming, clearCurrentConversation,

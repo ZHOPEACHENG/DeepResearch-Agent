@@ -33,6 +33,7 @@ from backend.schemas.conversation import (
     SendMessageRequest,
 )
 from backend.services import chat_service, conversation_service
+from backend.services.chat_service import _is_thinking_conflict
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -202,18 +203,25 @@ async def send_message(
                 parent_message_id=body.parent_message_id,
                 model=body.model,
                 mode=body.mode,
+                deep_thinking=body.deep_thinking,
             ):
                 event_name = sse_event["event"]
                 data_json = json.dumps(sse_event["data"], ensure_ascii=False)
                 yield f"event: {event_name}\ndata: {data_json}\n\n"
-        except Exception:
-            logger.error(
-                "api_sse_stream_error",
-                conv_id=str(conversation_id),
-                user_id=str(current_user.id),
-                exc_info=True,
-            )
-            error_data = json.dumps({"message": "数据流传输错误"}, ensure_ascii=False)
+        except Exception as e:
+            if _is_thinking_conflict(e):
+                error_data = json.dumps({
+                    "message": "深度思考模式不支持结构化输出，请关闭深度思考开关后重试",
+                    "code": "THINKING_CONFLICT",
+                }, ensure_ascii=False)
+            else:
+                logger.error(
+                    "api_sse_stream_error",
+                    conv_id=str(conversation_id),
+                    user_id=str(current_user.id),
+                    exc_info=True,
+                )
+                error_data = json.dumps({"message": "数据流传输错误"}, ensure_ascii=False)
             yield f"event: error\ndata: {error_data}\n\n"
 
     return StreamingResponse(

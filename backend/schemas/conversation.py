@@ -64,6 +64,7 @@ class SendMessageRequest(BaseModel):
     parent_message_id: UUID | None = None
     model: str | None = None
     mode: Literal["chat", "research"] = "chat"
+    deep_thinking: bool = False
 
 
 class PlanActionRequest(BaseModel):

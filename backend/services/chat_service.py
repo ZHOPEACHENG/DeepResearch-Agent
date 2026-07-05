@@ -39,6 +39,13 @@ _plan_events: dict[str, asyncio.Event] = {}
 _plan_actions: dict[str, dict] = {}
 
 
+def _is_thinking_conflict(error: BaseException) -> bool:
+    """Return True when the error is caused by thinking mode rejecting tool_choice."""
+    return (
+        hasattr(error, "message") and "Thinking mode does not support" in str(error.message)
+    ) or "Thinking mode does not support tool_choice" in str(error)
+
+
 async def resume_plan_action(
     message_id: uuid.UUID, action: str, modifications: str | None = None,
 ) -> None:
@@ -60,11 +67,15 @@ async def handle_message(
     parent_message_id: uuid.UUID | None = None,
     model: str | None = None,
     mode: Literal["chat", "research"] = "chat",
+    deep_thinking: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Entry point: save user message, dispatch to chat or research graph.
 
     Yields SSE event dicts: ``message_created`` → stream events → ``done``.
     """
+    from backend.tools.llm import set_deep_thinking
+    set_deep_thinking(deep_thinking)
+
     # Auto-title new conversations
     try:
         conv = await conversation_service.get_conversation(conversation_id, user_id)
@@ -331,11 +342,17 @@ async def _run_research(
             data["messageId"] = str(msg.id)
             yield _sse("gap_question", data)
         return
-    except Exception:
-        logger.error(
-            "research_failed", conv_id=str(conversation_id), user_id=str(user_id), exc_info=True,
-        )
-        yield _sse("error", {"message": "研究流程执行失败", "taskId": task_id_str})
+    except Exception as e:
+        if _is_thinking_conflict(e):
+            yield _sse("error", {
+                "message": "深度思考模式不支持结构化输出，请关闭深度思考开关后重试",
+                "code": "THINKING_CONFLICT", "taskId": task_id_str,
+            })
+        else:
+            logger.error(
+                "research_failed", conv_id=str(conversation_id), user_id=str(user_id), exc_info=True,
+            )
+            yield _sse("error", {"message": "研究流程执行失败", "taskId": task_id_str})
         return
 
 

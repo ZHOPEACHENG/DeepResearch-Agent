@@ -407,6 +407,14 @@ watch(() => store.messages.length, scrollToBottom)
           active-text="深度研究"
           inactive-text="对话"
         />
+        <el-switch
+          v-model="store.deepThinking"
+          size="small"
+          :disabled="store.isStreaming"
+          inline-prompt
+          active-text="深度思考"
+          inactive-text="深度思考"
+        />
       </div>
       <div class="chat-input">
         <el-input

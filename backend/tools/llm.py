@@ -28,12 +28,20 @@ Usage::
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar
 from functools import lru_cache
 
 from langchain.chat_models import init_chat_model
 from langchain.embeddings import init_embeddings
 
 from backend.core.config import settings
+
+# Per-request override for deep thinking — set by chat_service at the start
+# of each request from SendMessageRequest.deep_thinking, then read by
+# get_chat_model().  Falls back to settings.llm_deep_thinking when unset.
+_deep_thinking_override: ContextVar[bool | None] = ContextVar(
+    "deep_thinking_override", default=None,
+)
 
 
 def _resolve_model(name: str) -> str:
@@ -53,7 +61,6 @@ def _resolve_model(name: str) -> str:
     return settings.llm_model
 
 
-@lru_cache(maxsize=8)
 def get_chat_model(
     name: str = "default",
     *,
@@ -65,6 +72,13 @@ def get_chat_model(
 
     Uses ``init_chat_model`` for automatic provider routing.
 
+    When ``settings.llm_deep_thinking`` is ``False`` (default), reasoning is
+    explicitly disabled so that ``with_structured_output()`` can use
+    ``tool_choice`` — thinking mode rejects it at the API level.
+
+    When ``True``, thinking stays on for compatible models; agents that need
+    structured output must fall back to prompt-based extraction.
+
     Args:
         name: One of ``"default"``, ``"summarization"``, ``"planner"``,
             ``"analyzer"``, ``"writer"``.
@@ -74,7 +88,7 @@ def get_chat_model(
         A LangChain ``BaseChatModel`` instance.
     """
     model = model_override or _resolve_model(name)
-    return init_chat_model(
+    chat_model = init_chat_model(
         model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -82,6 +96,42 @@ def get_chat_model(
         timeout=120.0,
         request_timeout=120.0,
     )
+
+    # ── Deep thinking detection ────────────────────────────────────
+    # Provider-agnostic: any model class with a ``reasoning`` field
+    # potentially has a thinking mode that rejects tool_choice.
+    # Per-request ContextVar takes precedence over global settings.
+    deep_thinking = _deep_thinking_override.get()
+    if deep_thinking is None:
+        deep_thinking = settings.llm_deep_thinking
+
+    has_reasoning = hasattr(chat_model, "reasoning")
+
+    if has_reasoning and not deep_thinking:
+        # User didn't ask for thinking → keep it disabled so
+        # with_structured_output() can use tool_choice safely.
+        chat_model.extra_body = {"thinking": {"type": "disabled"}}
+
+    if not has_reasoning and deep_thinking:
+        # User asked for thinking but this model doesn't support it.
+        # Use a plain logging call to avoid circular import with utils.logging.
+        import logging
+        _log = logging.getLogger(__name__)
+        _log.warning(
+            "LLM_DEEP_THINKING=True but model '%s' does not support deep thinking — ignored",
+            model,
+        )
+
+    return chat_model
+
+
+def set_deep_thinking(enabled: bool) -> None:
+    """Set the per-request deep thinking override (called by chat_service).
+
+    This takes precedence over ``settings.llm_deep_thinking`` for the
+    current asyncio task and all sub-tasks (ContextVar is inherited).
+    """
+    _deep_thinking_override.set(enabled)
 
 
 @lru_cache(maxsize=1)
