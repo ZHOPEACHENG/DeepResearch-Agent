@@ -169,7 +169,7 @@ class PlannerAgent(Agent):
         model = get_chat_model("planner", temperature=0.3, max_tokens=2048)
         structured = model.with_structured_output(PlanOutput, method="json_schema")
         try:
-            output: PlanOutput = await structured.ainvoke(messages)
+            output: PlanOutput | None = await structured.ainvoke(messages)
         except Exception:
             logger.error(
                 "planner_llm_failed",
@@ -177,6 +177,11 @@ class PlannerAgent(Agent):
                 exc_info=True,
             )
             raise
+
+        if output is None:
+            raise RuntimeError(
+                "Planner structured output returned None — model refused tool call"
+            )
 
         plan = _plan_output_to_dict(output, topic=topic, task_id=state.get("task_id"))
         state["research_plan"] = plan

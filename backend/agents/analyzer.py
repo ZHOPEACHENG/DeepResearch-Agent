@@ -103,10 +103,22 @@ class AnalyzerAgent(Agent):
         ]
 
         try:
-            output: AnalyzerOutput = await structured.ainvoke(messages)
+            output: AnalyzerOutput | None = await structured.ainvoke(messages)
         except Exception:
             logger.error("analyzer_llm_failed", task_id=task_id_str, exc_info=True)
             raise
+
+        if output is None:
+            logger.warning(
+                "analyzer_null_output", task_id=task_id_str,
+                hint="structured output returned None — model may have refused tool call",
+            )
+            summary, gaps = self._empty_summary_with_gaps(
+                task_id_str, questions, conv_id(state),
+            )
+            state["knowledge_summary"] = summary
+            state["knowledge_gaps"] = gaps
+            return state
 
         analysis_round = int(state.get("analysis_round", 1) or 1)
         summary = self._build_summary(output, task_id_str, state)

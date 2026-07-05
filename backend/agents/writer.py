@@ -104,10 +104,15 @@ class WriterAgent(Agent):
         ]
 
         try:
-            output: WriterOutput = await structured.ainvoke(messages)
+            output: WriterOutput | None = await structured.ainvoke(messages)
         except Exception:
             logger.error("writer_llm_failed", task_id=task_id_str, exc_info=True)
             raise
+
+        if output is None:
+            raise RuntimeError(
+                "Writer structured output returned None — model refused tool call"
+            )
 
         report = self._assemble_report(output, synth, citation_list, id_to_index)
 
