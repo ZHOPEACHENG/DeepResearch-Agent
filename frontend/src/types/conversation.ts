@@ -1,7 +1,7 @@
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 
 export type MessageType = 'text' | 'plan_card' | 'retrieval_card'
-  | 'report_card' | 'citation' | 'error'
+  | 'report_card' | 'citation' | 'error' | 'gap_question'
 
 export type PlanAction = 'accept' | 'modify' | 'reject'
 
@@ -45,7 +45,7 @@ export type ChatMode = 'chat' | 'research'
 export type SSEEventType = 'message_created' | 'chat_chunk'
   | 'plan_generated' | 'plan_action' | 'phase_change' | 'progress'
   | 'retrieval_started' | 'retrieval_progress' | 'retrieval_complete'
-  | 'analysis_complete' | 'report_chunk' | 'report_complete'
+  | 'analysis_complete' | 'gap_question' | 'report_chunk' | 'report_complete'
   | 'complete' | 'error' | 'done'
 
 export interface SSEEvent {

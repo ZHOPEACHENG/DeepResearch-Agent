@@ -5,6 +5,11 @@ All settings are loaded from environment variables with sensible defaults.
 Secrets (API keys, passwords) MUST NOT appear in code or commits.
 """
 
+# Populate os.environ so that LangChain providers (ChatDeepSeek, ChatAnthropic,
+# etc.) can discover their API keys via the standard env vars.
+from dotenv import load_dotenv
+load_dotenv()
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,8 +24,6 @@ class Settings(BaseSettings):
     )
 
     # ── LLM ──────────────────────────────────────────────────────────
-    llm_api_key: str
-    llm_api_base: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o"              # Default model for most agents
     llm_embed_model: str = "text-embedding-3-small"
     chat_model: str = "gpt-4o"             # Model for conversational replies
@@ -88,8 +91,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_task_execution_seconds: int = 7200  # 2 hours
     max_concurrent_tasks_per_user: int = 3
-    max_gap_rounds: int = 3                    # Deprecated — ReAct loop handles this internally
-    max_analyzer_iterations: int = 5           # ReAct loop hard cap
+    max_gap_rounds: int = 3                    # Max gap-fill iterations in the gap_loop (FR-008)
 
     # ── CORS ─────────────────────────────────────────────────────────
     cors_origins: list[str] = ["http://localhost:3000"]

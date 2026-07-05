@@ -1,5 +1,5 @@
 """
-Synthesizer agent — conflict resolution + merge (T055).
+Synthesizer — conflict resolution + merge.
 
 Resolves conflicts between sources and merges gap-fill rounds into a single
 final structured knowledge base that the Writer turns into a report. The
@@ -19,7 +19,8 @@ from __future__ import annotations
 from typing import Any
 
 from backend.agents.base import Agent
-from backend.tools.llm import get_llm_provider, safe_json_loads
+from backend.tools.llm import get_chat_model
+from backend.schemas.llm_outputs import SynthesizerOutput
 from backend.utils.datetime import now_iso
 from backend.utils.logging import get_logger
 from backend.utils.state import coerce_citation_map, conv_id
@@ -38,25 +39,6 @@ Your job:
    is coherent and non-redundant.
 3. Produce a final structured knowledge base grouped by research question,
    suitable for a report writer to turn into prose.
-
-Return STRICT JSON only (no markdown fences, no prose) with this exact shape:
-{
-  "synthesized_content": "Markdown: the final merged, conflict-resolved knowledge base",
-  "conflicts": [
-    {
-      "topic": "short topic",
-      "finding_a": "...",
-      "finding_b": "...",
-      "resolution": "how it was handled"
-    }
-  ],
-  "citation_map": {
-    "chunk_1": ["retrieval_result_id_a", "retrieval_result_id_b"]
-  },
-  "open_questions": [
-    "unresolved questions that will be noted in the report's gap notes"
-  ]
-}
 
 Rules:
 - citation_map must cover every factual chunk in synthesized_content;
@@ -112,7 +94,8 @@ class SynthesizerAgent(Agent):
             logger.warning("synthesizer_no_input", task_id=task_id_str)
             return state
 
-        provider = get_llm_provider()
+        model = get_chat_model("default", temperature=0.2, max_tokens=4096)
+        structured = model.with_structured_output(SynthesizerOutput, method="json_schema")
         messages = [
             {"role": "system", "content": _SYNTH_SYSTEM},
             {"role": "user", "content": self._build_prompt(
@@ -121,40 +104,35 @@ class SynthesizerAgent(Agent):
         ]
 
         try:
-            raw = await provider.chat(messages=messages, temperature=0.2, max_tokens=4096)
+            output: SynthesizerOutput = await structured.ainvoke(messages)
         except Exception:
             logger.error("synthesizer_llm_failed", task_id=task_id_str, exc_info=True)
-            raise
-
-        parsed = safe_json_loads(raw)
-        if parsed is None:
-            logger.warning("synthesizer_json_parse_failed", task_id=task_id_str, preview=raw[:200])
             # Fall back to the analyzer summary verbatim so the pipeline
             # degrades gracefully instead of crashing.
-            parsed = {
+            output = None
+
+        if output is None:
+            synthesized = {
+                "task_id": task_id_str,
+                "conversation_id": conv_id(state),
                 "synthesized_content": _summary_content(summary),
                 "conflicts": [],
-                "citation_map": summary.get("citation_map") or {},
+                "citation_map": coerce_citation_map(summary.get("citation_map") or {}),
                 "open_questions": [
                     g.get("description") for g in gaps if g.get("description")
                 ],
+                "generated_at": now_iso(),
             }
-
-        synthesized = {
-            "task_id": task_id_str,
-            "conversation_id": conv_id(state),
-            "synthesized_content": (parsed.get("synthesized_content") or "").strip(),
-            "conflicts": (
-                parsed.get("conflicts") if isinstance(parsed.get("conflicts"), list) else []
-            ),
-            "citation_map": coerce_citation_map(parsed.get("citation_map")),
-            "open_questions": (
-                parsed.get("open_questions")
-                if isinstance(parsed.get("open_questions"), list)
-                else [g.get("description") for g in gaps if g.get("description")]
-            ),
-            "generated_at": now_iso(),
-        }
+        else:
+            synthesized = {
+                "task_id": task_id_str,
+                "conversation_id": conv_id(state),
+                "synthesized_content": output.synthesized_content,
+                "conflicts": [c.model_dump() for c in output.conflicts],
+                "citation_map": coerce_citation_map(output.citation_map),
+                "open_questions": output.open_questions,
+                "generated_at": now_iso(),
+            }
 
         state["synthesized_knowledge"] = synthesized
 

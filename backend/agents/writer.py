@@ -1,5 +1,5 @@
 """
-Writer agent — report generation + citation annotation (T056).
+Writer — report generation + citation annotation.
 
 Turns the synthesized knowledge base into a structured research report
 (abstract + background + sectioned body keyed by research question + gap
@@ -23,8 +23,9 @@ from sqlalchemy import select
 
 from backend.agents.base import Agent
 from backend.core.database import get_postgres_session
+from backend.tools.llm import get_chat_model
 from backend.models.report import Citation, ResearchReport
-from backend.tools.llm import get_llm_provider, safe_json_loads
+from backend.schemas.llm_outputs import WriterOutput
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -33,21 +34,13 @@ _WRITER_SYSTEM = """You are an academic research-report writer.
 You receive a synthesized knowledge base, the research questions, and a numbered
 citation list mapping index → source id. Write a rigorous research report.
 
-Structure the report as STRICT JSON (no markdown fences, no prose outside JSON)
-with this exact shape:
-{
-  "title": "report title",
-  "abstract": "150-300 word abstract",
-  "background": "1-2 paragraph background framing the topic",
-  "sections": [
-    {
-      "heading": "section heading (often a research question)",
-      "content": "Markdown body. Cite inline like [1] or [2,3]. Do not invent sources.",
-      "citation_indices": [1, 3]
-    }
-  ],
-  "gap_notes": "Markdown: what remains unanswered or uncertain, and why"
-}
+Structure:
+- title: a concise, descriptive report title
+- abstract: 150-300 word abstract summarising the findings
+- background: 1-2 paragraphs framing the research topic
+- sections: one per core research question, each with a heading and
+  Markdown body citing sources inline as [1] or [2,3]
+- gap_notes: what remains unanswered or uncertain, and why
 
 Rules:
 - Every factual statement MUST carry an inline citation marker [N] referring
@@ -55,8 +48,7 @@ Rules:
 - Only use citation indices that exist in the provided list. Never fabricate
   references.
 - One section per core research question where possible.
-- citation_indices lists the indices actually used in that section.
-- Output ONLY the JSON object."""
+- citation_indices lists the indices actually used in that section."""
 
 
 class WriterAgent(Agent):
@@ -102,7 +94,8 @@ class WriterAgent(Agent):
             questions=len(questions),
         )
 
-        provider = get_llm_provider("writer")
+        model = get_chat_model("writer", temperature=0.3, max_tokens=6000)
+        structured = model.with_structured_output(WriterOutput, method="json_schema")
         messages = [
             {"role": "system", "content": _WRITER_SYSTEM},
             {"role": "user", "content": self._build_prompt(
@@ -111,17 +104,12 @@ class WriterAgent(Agent):
         ]
 
         try:
-            raw = await provider.chat(messages=messages, temperature=0.3, max_tokens=6000)
+            output: WriterOutput = await structured.ainvoke(messages)
         except Exception:
             logger.error("writer_llm_failed", task_id=task_id_str, exc_info=True)
             raise
 
-        parsed = safe_json_loads(raw)
-        if parsed is None:
-            logger.warning("writer_json_parse_failed", task_id=task_id_str, preview=raw[:200])
-            parsed = {}
-
-        report = self._assemble_report(parsed, synth, citation_list, id_to_index)
+        report = self._assemble_report(output, synth, citation_list, id_to_index)
 
         # Persist to PostgreSQL (report + citation rows).
         report_id = await self._persist(task_uuid, task_id_str, report, id_to_index)
@@ -222,39 +210,28 @@ class WriterAgent(Agent):
             f"Synthesized knowledge base:\n{content or '(empty)'}\n\n"
             f"Unresolved / open questions to fold into gap_notes:\n{open_block}\n\n"
             f"Citation list (use these indices inline as [N]):\n{cite_block}\n\n"
-            "Write the research report as the specified JSON object."
+            "Write the research report now."
         )
 
     def _assemble_report(
         self,
-        parsed: dict,
+        output: WriterOutput,
         synth: dict,
         citation_list: list[dict],
         id_to_index: dict[str, int],
     ) -> dict[str, Any]:
-        title = (parsed.get("title") or "研究报告").strip()
-        abstract = (parsed.get("abstract") or "").strip()
-        background = (parsed.get("background") or "").strip()
-        gap_notes = (parsed.get("gap_notes") or "").strip()
+        """Convert typed ``WriterOutput`` to the canonical report dict shape.
 
-        raw_sections = parsed.get("sections") or []
+        Preserves the exact same output structure as the pre-LangChain version
+        so SSE events and PostgreSQL persistence remain compatible.
+        """
         sections: list[dict[str, Any]] = []
-        if isinstance(raw_sections, list):
-            for s in raw_sections:
-                if not isinstance(s, dict):
-                    continue
-                heading = (s.get("heading") or "").strip()
-                body = (s.get("content") or "").strip()
-                if not heading and not body:
-                    continue
-                indices = s.get("citation_indices") or []
-                if not isinstance(indices, list):
-                    indices = []
-                sections.append({
-                    "heading": heading or "未命名章节",
-                    "content": body,
-                    "citations": [int(i) for i in indices if isinstance(i, (int, float))],
-                })
+        for s in output.sections:
+            sections.append({
+                "heading": s.heading or "未命名章节",
+                "content": s.content,
+                "citations": [int(i) for i in s.citation_indices if isinstance(i, (int, float))],
+            })
 
         # If the model produced no sections, fold the knowledge content into
         # a single section so the report is never empty.
@@ -266,10 +243,10 @@ class WriterAgent(Agent):
             })
 
         # Ensure a background section exists up front.
-        if background:
+        if output.background:
             sections.insert(0, {
                 "heading": "研究背景",
-                "content": background,
+                "content": output.background,
                 "citations": [],
             })
 
@@ -292,11 +269,11 @@ class WriterAgent(Agent):
         ]
 
         return {
-            "title": title,
-            "abstract": abstract,
+            "title": output.title or "研究报告",
+            "abstract": output.abstract,
             "sections": sections,
             "citations": citations,
-            "gap_notes": gap_notes,
+            "gap_notes": output.gap_notes,
         }
 
     async def _persist(

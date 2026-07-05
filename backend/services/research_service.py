@@ -1,381 +1,280 @@
 """
-Research orchestration — LangGraph workflow (T061–T064).
+Research orchestration — LangGraph workflow.
 
-Builds and runs the multi-agent research pipeline as a LangGraph
-``StateGraph``:
+The planner runs outside the graph (decision 1). The graph starts from
+``retriever`` and handles the gap-fill loop internally::
 
-    plan → [plan_confirmation ← user action]
-         → retrieve → analyze → synthesize → write
+graph TD
+    START["START"] --> retriever["retriever"]
+    retriever --> analyzer["analyzer"]
+    analyzer --> router{"critical gaps?"}
+    router -->|NO| synthesizer["synthesizer"]
+    router -->|YES| gap_confirm["gap_confirm\n(interrupt)"]
+    gap_confirm -->|answer| retriever
+    gap_confirm -->|skip| synthesizer
+    synthesizer --> writer["writer"]
+    writer --> END["END"]
 
-The Analyzer uses a ReAct loop (search → think → AnalysisComplete) to
-detect and fill knowledge gaps internally, eliminating the outer gap_loop
-cycle. Workflow state is checkpointed to MongoDB at each node boundary so
-a paused/failed run can resume (T062, Constitution III). The runner is an
-async generator that yields SSE event dicts so ChatService can stream
-phase_change / retrieval_complete / analysis_complete / report_complete /
-error / complete events to the client (T063).
 
-Constitution II: orchestration depends only on the ``Agent`` contract and
-the ``AgentRegistry`` — adding/replacing an agent needs no change here.
+Chat mode uses a separate ``chat_node`` graph for message streaming.
+
+Both graphs share an ``InMemorySaver`` keyed by ``thread_id=conversation_id``.
 """
 
 from __future__ import annotations
 
 import json
-import uuid
-from collections.abc import AsyncGenerator
-from typing import Any, TypedDict
+from typing import Literal, Any
 
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import MessagesState
+from langgraph.types import interrupt
 
 from backend.agents.analyzer import AnalyzerAgent
 from backend.agents.planner import PlannerAgent
 from backend.agents.retriever import RetrieverAgent
 from backend.agents.synthesizer import SynthesizerAgent
 from backend.agents.writer import WriterAgent
-from backend.core.database import get_mongo_db
+from backend.core.config import settings
 from backend.services import task_service
-from backend.tools.llm import get_llm_provider, safe_json_loads
-from backend.utils.datetime import now_dt
+from backend.tools.llm import get_chat_model
 from backend.utils.logging import get_logger
-from backend.utils.sse import sse_event as _sse
 
 logger = get_logger(__name__)
 
-# Agent instances — created once, reused across runs.
-_planner = PlannerAgent()
+# ── Agent instances ───────────────────────────────────────────────────
+
+planner = PlannerAgent()
 _retriever = RetrieverAgent()
 _analyzer = AnalyzerAgent()
 _synthesizer = SynthesizerAgent()
 _writer = WriterAgent()
 
-# Checkpoint collection in MongoDB (snapshots of full workflow state).
-_CHECKPOINT_COLLECTION = "research_checkpoints"
+# ── Checkpointer (shared by both graphs) ─────────────────────────────
+
+_checkpointer = InMemorySaver()
 
 
-# ── State schema ───────────────────────────────────────────────────────
+# ── State ──────────────────────────────────────────────────────────────
 
 
-class ResearchGraphState(TypedDict, total=False):
-    """Shared state passed between LangGraph nodes.
+class ResearchState(MessagesState):
+    """Shared state for the research pipeline graph.
 
-    With the Analyzer ReAct loop handling gap detection internally, the
-    outer gap_loop and its supporting fields (trigger_supplementary_retrieval,
-    gap_queries) have been removed. The DAG is now a simple linear pipeline.
+    Inherits ``messages`` from ``MessagesState`` with ``add_messages`` reducer,
+    so chat history is auto-managed by LangGraph.
     """
 
+    # ── task identity ──
     task_id: str
-    user_id: str
-    conversation_id: str
+    user_id: str | None
+    conversation_id: str | None
     topic: str
-    model: str
+    model: str | None
 
+    # ── plan ──
     research_plan: dict | None
-    round_number: int                                  # always 1 (kept for compat)
+    modification_directive: str | None
+    plan_to_revise: dict | None
+    _plan_status: str  # "accepted" | "rejected" | "revised"
+
+    # ── retrieval + analysis loop ──
+    analysis_round: int
+    gap_queries: list[str]
     retrieval_results: list[dict]
     all_retrieval_results: list[dict]
     knowledge_summary: dict | None
     knowledge_gaps: list[dict]
-    analyzer_search_log: list[dict]                    # ReAct search history
+    _gap_action: str       # "answer" | "skip"
+
+    # ── synthesis + reporting ──
     synthesized_knowledge: dict | None
     final_report: dict | None
-
-    error: str | None
-    current_phase: str
-
-
-# ── Checkpointing (T062) ───────────────────────────────────────────────
-
-
-async def _save_checkpoint(state: dict[str, Any]) -> None:
-    """Snapshot the full workflow state to MongoDB at a node boundary."""
-    task_id = state.get("task_id")
-    if not task_id:
-        return
-    try:
-        db = get_mongo_db()
-        # Store one checkpoint per task, overwritten each boundary.
-        await db[_CHECKPOINT_COLLECTION].update_one(
-            {"task_id": str(task_id)},
-            {"$set": {"task_id": str(task_id), "state": _jsonable_state(state)}},
-            upsert=True,
-        )
-    except Exception:
-        logger.warning("checkpoint_save_failed", task_id=str(task_id), exc_info=True)
-
-
-async def load_checkpoint(task_id: str) -> dict[str, Any] | None:
-    """Load the last checkpoint state for a task, or None."""
-    try:
-        db = get_mongo_db()
-        doc = await db[_CHECKPOINT_COLLECTION].find_one({"task_id": str(task_id)})
-        return doc.get("state") if doc else None
-    except Exception:
-        logger.warning("checkpoint_load_failed", task_id=str(task_id), exc_info=True)
-        return None
-
-
-def _jsonable_state(state: dict[str, Any]) -> dict[str, Any]:
-    """Ensure the state is JSON-serializable for Mongo persistence."""
-    out: dict[str, Any] = {}
-    for k, v in state.items():
-        out[k] = _jsonable(v)
-    return out
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    return str(value)
+    user_focus_notes: str
 
 
 # ── Graph nodes ────────────────────────────────────────────────────────
 
 
-async def _retrieve_node(state: ResearchGraphState) -> ResearchGraphState:
-    """Retriever agent: multi-source search + dedup + store."""
-    s: dict[str, Any] = dict(state)  # type: ignore[assignment]
-    s = await _retriever.run(s)
-    return s  # type: ignore[return-value]
+async def _chat_node(state: ResearchState) -> dict[str, Any]:
+    """Single LLM call for chat mode. History is in state["messages"]."""
+    model = get_chat_model("default", temperature=0.7, model_override=state.get("model") or None)
+    response = await model.ainvoke(state["messages"])
+    return {"messages": [response]}
 
 
-async def _analyze_node(state: ResearchGraphState) -> ResearchGraphState:
-    """Analyzer agent: integrate + gap detection."""
-    s: dict[str, Any] = dict(state)  # type: ignore[assignment]
-    s = await _analyzer.run(s)
-    return s  # type: ignore[return-value]
 
 
-async def _synthesize_node(state: ResearchGraphState) -> ResearchGraphState:
-    """Synthesizer agent: conflict resolution + merge."""
-    s: dict[str, Any] = dict(state)  # type: ignore[assignment]
-    s = await _synthesizer.run(s)
-    return s  # type: ignore[return-value]
+async def _retriever_node(state: ResearchState) -> dict[str, Any]:
+    """Multi-source search, stores results in MongoDB."""
+    agent_state: dict[str, Any] = {
+        "task_id": state.get("task_id"),
+        "conversation_id": state.get("conversation_id"),
+        "user_id": state.get("user_id"),
+        "research_plan": state.get("research_plan"),
+        "analysis_round": state.get("analysis_round", 1),
+        "gap_queries": state.get("gap_queries", []),
+        "all_retrieval_results": state.get("all_retrieval_results", []),
+    }
+    result = await _retriever.run(agent_state)
+    return {
+        "retrieval_results": result.get("retrieval_results", []),
+        "all_retrieval_results": result.get("all_retrieval_results", []),
+    }
 
 
-async def _write_node(state: ResearchGraphState) -> ResearchGraphState:
-    """Writer agent: report generation + persistence."""
-    s: dict[str, Any] = dict(state)  # type: ignore[assignment]
-    s = await _writer.run(s)
-    return s  # type: ignore[return-value]
+async def _analyzer_node(state: ResearchState) -> dict[str, Any]:
+    """Integrate sources, detect knowledge gaps."""
+    agent_state: dict[str, Any] = {
+        "task_id": state.get("task_id"),
+        "conversation_id": state.get("conversation_id"),
+        "user_id": state.get("user_id"),
+        "research_plan": state.get("research_plan"),
+        "all_retrieval_results": state.get("all_retrieval_results", []),
+        "analysis_round": state.get("analysis_round", 1),
+    }
+    result = await _analyzer.run(agent_state)
+    return {
+        "knowledge_summary": result.get("knowledge_summary"),
+        "knowledge_gaps": result.get("knowledge_gaps", []),
+    }
 
 
-def build_research_graph() -> Any:
-    """Compile the LangGraph research workflow.
+async def _gap_confirm_node(state: ResearchState) -> dict[str, Any]:
+    """Pause for user to answer or skip knowledge gaps."""
+    gaps = state.get("knowledge_gaps") or []
+    critical = [g for g in gaps if g.get("severity") == "critical" and g.get("suggested_query")]
 
-    The plan + plan_confirmation happen in ChatService. This graph runs a
-    simple linear pipeline: retrieve → analyze → synthesize → write → END.
+    decision = interrupt({
+        "type": "gap_question",
+        "gaps": critical,
+        "round": state.get("analysis_round", 1),
+    })
 
-    With the Analyzer ReAct loop handling gap detection internally, the
-    outer gap_loop cycle has been removed.
-    """
-    graph = StateGraph(ResearchGraphState)
-    graph.add_node("retrieve", _retrieve_node)
-    graph.add_node("analyze", _analyze_node)
-    graph.add_node("synthesize", _synthesize_node)
-    graph.add_node("write", _write_node)
+    action = decision.get("action", "skip") if isinstance(decision, dict) else "skip"
 
-    graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "analyze")
-    graph.add_edge("analyze", "synthesize")
-    graph.add_edge("synthesize", "write")
-    graph.add_edge("write", END)
-    return graph.compile()
-
-
-_GRAPH = build_research_graph()
+    if action == "answer" and critical:
+        queries = [g["suggested_query"] for g in critical if g.get("suggested_query")]
+        return {
+            "_gap_action": "answer",
+            "gap_queries": queries,
+            "analysis_round": state.get("analysis_round", 1) + 1,
+        }
+    return {"_gap_action": "skip"}
 
 
-# ── Pipeline runner (T063 SSE emitter + T064 graceful failure) ─────────
+async def _synthesizer_node(state: ResearchState) -> dict[str, Any]:
+    """Resolve conflicts, merge knowledge."""
+    agent_state: dict[str, Any] = {
+        "task_id": state.get("task_id"),
+        "conversation_id": state.get("conversation_id"),
+        "knowledge_summary": state.get("knowledge_summary"),
+        "knowledge_gaps": state.get("knowledge_gaps", []),
+        "all_retrieval_results": state.get("all_retrieval_results", []),
+        "user_focus_notes": state.get("user_focus_notes", ""),
+    }
+    result = await _synthesizer.run(agent_state)
+    return {"synthesized_knowledge": result.get("synthesized_knowledge")}
 
 
-# Phase labels shown to the user during progress.
-_PHASE_LABELS = {
-    "retrieve": "正在检索资料",
-    "analyze": "正在整合分析",
-    "synthesize": "正在综合冲突与缺口",
-    "write": "正在生成报告",
+async def _writer_node(state: ResearchState) -> dict[str, Any]:
+    """Generate cited report, persist to PostgreSQL."""
+    agent_state: dict[str, Any] = {
+        "task_id": state.get("task_id"),
+        "conversation_id": state.get("conversation_id"),
+        "research_plan": state.get("research_plan"),
+        "synthesized_knowledge": state.get("synthesized_knowledge"),
+        "all_retrieval_results": state.get("all_retrieval_results", []),
+        "user_focus_notes": state.get("user_focus_notes", ""),
+    }
+    result = await _writer.run(agent_state)
+    return {"final_report": result.get("final_report")}
+
+
+# ── Routing functions ─────────────────────────────────────────────────
+
+
+def _route_after_analyze(state: ResearchState) -> Literal["gap_confirm", "synthesizer"]:
+    gaps = state.get("knowledge_gaps") or []
+    analysis_round = state.get("analysis_round", 1)
+    critical = [g for g in gaps if g.get("severity") == "critical" and g.get("suggested_query")]
+    if critical and analysis_round < settings.max_gap_rounds:
+        return "gap_confirm"
+    return "synthesizer"
+
+
+def _route_after_gap(state: ResearchState) -> Literal["retriever", "synthesizer"]:
+    if state.get("_gap_action") == "answer":
+        return "retriever"
+    return "synthesizer"
+
+
+# ── Graph definitions ──────────────────────────────────────────────────
+
+
+_chat_graph = None
+_research_graph = None
+
+
+def _build_chat_graph():
+    graph = StateGraph(ResearchState)
+    graph.add_node("chat_node", _chat_node)
+    graph.add_edge(START, "chat_node")
+    graph.add_edge("chat_node", END)
+    return graph.compile(checkpointer=_checkpointer)
+
+
+def _build_research_graph():
+    graph = StateGraph(ResearchState)
+    graph.add_node("retriever", _retriever_node)
+    graph.add_node("analyzer", _analyzer_node)
+    graph.add_node("gap_confirm", _gap_confirm_node)
+    graph.add_node("synthesizer", _synthesizer_node)
+    graph.add_node("writer", _writer_node)
+
+    graph.add_edge(START, "retriever")
+    graph.add_edge("retriever", "analyzer")
+    graph.add_conditional_edges("analyzer", _route_after_analyze, {
+        "gap_confirm": "gap_confirm",
+        "synthesizer": "synthesizer",
+    })
+    graph.add_conditional_edges("gap_confirm", _route_after_gap, {
+        "retriever": "retriever",
+        "synthesizer": "synthesizer",
+    })
+    graph.add_edge("synthesizer", "writer")
+    graph.add_edge("writer", END)
+    return graph.compile(checkpointer=_checkpointer)
+
+
+def get_chat_graph():
+    global _chat_graph
+    if _chat_graph is None:
+        _chat_graph = _build_chat_graph()
+    return _chat_graph
+
+
+def get_research_graph():
+    global _research_graph
+    if _research_graph is None:
+        _research_graph = _build_research_graph()
+    return _research_graph
+
+
+# ── SSE helpers ──────────────────────────────────────────────────────
+
+
+PHASE_LABELS = {
+    "retriever": "正在检索资料",
+    "analyzer": "正在整合分析",
+    "gap_confirm": "检测到知识缺口，等待确认",
+    "synthesizer": "正在综合冲突与缺口",
+    "writer": "正在生成报告",
 }
 
 
-async def run_pipeline(
-    state: dict[str, Any],
-    *,
-    model: str | None = None,
-) -> AsyncGenerator[dict, None]:
-    """
-    Execute the research pipeline and yield SSE event dicts.
-
-    The plan is assumed already generated and confirmed by the caller
-    (ChatService). This runner drives the LangGraph graph from ``retrieve``
-    through ``write`` in a simple linear pipeline (the outer gap_loop has
-    been removed; gap detection is now internal to the Analyzer's ReAct loop).
-
-    Args:
-        state: Initial workflow state (must include task_id, topic,
-            research_plan, conversation_id, user_id).
-        model: LLM model name echoed back in report events.
-
-    Yields:
-        SSE event dicts: phase_change, retrieval_complete, analysis_complete,
-        report_complete, error, complete.
-    """
-    task_id = state.get("task_id")
-    task_id_str = str(task_id) if task_id else ""
-    task_uuid = uuid.UUID(task_id_str) if task_id_str else None
-    user_id = state.get("user_id")
-
-    state.setdefault("all_retrieval_results", [])
-
-    logger.info("pipeline_started", task_id=task_id_str)
-
-    # Mark the task running (pending → running) if we have a user_id.
-    # The transition is mandatory — if it fails (concurrency limit, DB
-    # error, invalid transition) the pipeline MUST NOT proceed because the
-    # final "completed" transition would be rejected and the task would
-    # stay in pending forever with a persisted (orphan) report.
-    if task_uuid and user_id:
-        try:
-            await task_service.update_task_status(
-                task_uuid, "running",
-                user_id=uuid.UUID(str(user_id)),
-                current_phase="retrieving",
-                progress_message="研究流水线已启动",
-                started_at=now_dt(),
-            )
-        except Exception:
-            logger.error("pipeline_aborted_running_failed", task_id=task_id_str, exc_info=True)
-            await _mark_failed(task_uuid, user_id, "无法启动研究：状态转换失败")
-            yield _sse("error", {"message": "启动研究流水线失败，请重试", "taskId": task_id_str})
-            return
-
-    merged_state: dict[str, Any] = dict(state)
-    try:
-        async for chunk in _GRAPH.astream(state, stream_mode="updates"):
-            for node_state in chunk.values():
-                if isinstance(node_state, dict):
-                    merged_state.update(node_state)
-            async for event in _process_chunk(
-                chunk, task_id_str, task_uuid, user_id, model,
-            ):
-                yield event
-            await _save_checkpoint(merged_state)
-    except Exception as exc:
-        logger.error("pipeline_failed", task_id=task_id_str, error=str(exc)[:300], exc_info=True)
-        await _mark_failed(task_uuid, user_id, str(exc)[:500])
-        yield _sse(
-            "error",
-            {"message": "研究流水线执行失败，已保存部分结果", "taskId": task_id_str},
-        )
-        return
-
-    # Propagate the graph's accumulated outputs back to the caller's state.
-    state.update(merged_state)
-    final_report = merged_state.get("final_report")
-    if final_report is None:
-        await _mark_failed(task_uuid, user_id, "未能生成研究报告")
-        yield _sse("error", {"message": "未能生成研究报告", "taskId": task_id_str})
-        return
-
-    # Success — mark the task completed.
-    if task_uuid and user_id:
-        try:
-            await task_service.update_task_status(
-                task_uuid, "completed",
-                user_id=uuid.UUID(str(user_id)),
-                current_phase="writing",
-                progress_message="研究完成",
-                completed_at=now_dt(),
-            )
-        except Exception:
-            logger.warning("pipeline_status_complete_failed", task_id=task_id_str, exc_info=True)
-
-    yield _sse("complete", {
-        "taskId": task_id_str,
-        "reportId": final_report.get("report_id") or final_report.get("id"),
-        "reportRef": f"/research/{task_id_str}/stage-outputs?stage=report",
-    })
-
-
-async def _process_chunk(
-    chunk: dict[str, Any],
-    task_id_str: str,
-    task_uuid: uuid.UUID | None,
-    user_id: Any,
-    model: str | None,
-) -> AsyncGenerator[dict, None]:
-    """Translate a LangGraph update chunk into SSE events + side effects.
-
-    With the gap_loop removed, gap_question events are no longer emitted.
-    The ``wait_gap`` parameter has been removed accordingly.
-    """
-    for node_name, node_state in chunk.items():
-        if not isinstance(node_state, dict):
-            continue
-
-        await _checkpoint_pg(task_uuid, user_id, node_name)
-
-        if node_name == "retrieve":
-            results = node_state.get("retrieval_results") or []
-            all_results = node_state.get("all_retrieval_results") or []
-            yield _sse("phase_change", {
-                "phase": "retrieving",
-                "message": _PHASE_LABELS["retrieve"],
-            })
-            yield _sse("retrieval_complete", {
-                "taskId": task_id_str,
-                "round": int(node_state.get("round_number", 1) or 1),
-                "sourceCount": len(all_results),
-                "roundCount": len(results),
-                "sources": _summarize_sources(all_results),
-            })
-
-        elif node_name == "analyze":
-            yield _sse("phase_change", {"phase": "analyzing", "message": _PHASE_LABELS["analyze"]})
-            gaps = node_state.get("knowledge_gaps") or []
-            search_log = node_state.get("analyzer_search_log") or []
-            yield _sse("analysis_complete", {
-                "taskId": task_id_str,
-                "gapCount": len(gaps),
-                "searchLog": search_log,
-            })
-
-        elif node_name == "synthesize":
-            yield _sse("phase_change", {
-                "phase": "synthesizing",
-                "message": _PHASE_LABELS["synthesize"],
-            })
-
-        elif node_name == "write":
-            yield _sse("phase_change", {"phase": "writing", "message": _PHASE_LABELS["write"]})
-            report = node_state.get("final_report")
-            if report:
-                yield _sse("report_complete", {
-                    "messageId": "",
-                    "taskId": task_id_str,
-                    "reportId": report.get("report_id") or report.get("id"),
-                    "model": model,
-                    "title": report.get("title", "研究报告"),
-                    "abstract": report.get("abstract", ""),
-                    "sections": report.get("sections", []),
-                    "citations": report.get("citations", []),
-                    "gapNotes": report.get("gap_notes", ""),
-                    "gap_notes": report.get("gap_notes", ""),
-                })
-
-
-
-# ── Helpers ────────────────────────────────────────────────────────────
-
-
-def _summarize_sources(results: list[dict]) -> list[dict[str, Any]]:
-    """Compact source list for the retrieval_card SSE payload."""
+def summarize_sources(results: list[dict]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in results:
         out.append({
@@ -387,102 +286,17 @@ def _summarize_sources(results: list[dict]) -> list[dict[str, Any]]:
     return out
 
 
-async def _checkpoint_pg(
-    task_uuid: uuid.UUID | None, user_id: Any, phase: str
-) -> None:
-    """Persist the current phase to PostgreSQL (ResearchTask checkpoint)."""
-    if not task_uuid or not user_id:
-        return
-    try:
-        await task_service.save_checkpoint(
-            task_uuid, uuid.UUID(str(user_id)), phase,
-            _PHASE_LABELS.get(phase, phase),
-        )
-    except Exception:
-        logger.warning("pg_checkpoint_failed", phase=phase, exc_info=True)
-
-
-async def _mark_failed(task_uuid: uuid.UUID | None, user_id: Any, message: str) -> None:
-    """Mark the task failed with an error message (T064)."""
-    if not task_uuid or not user_id:
-        return
-    try:
-        await task_service.update_task_status(
-            task_uuid, "failed",
-            user_id=uuid.UUID(str(user_id)),
-            error_message=message,
-            progress_message="研究失败",
-        )
-    except Exception:
-        logger.warning("pipeline_mark_failed_failed", exc_info=True)
-
-
-
-# ── Convenience: run the Planner (used by ChatService pre-confirmation) ─
+# ── Plan / clarity helpers (used by chat_service) ──────────────────────
 
 
 async def check_clarity(topic: str) -> dict[str, Any]:
-    """Check whether a user's research query is specific enough.
-
-    Delegates to ``PlannerAgent.check_clarity()``. ChatService calls this
-    before plan generation to avoid wasted pipeline runs on vague queries.
-    """
-    return await _planner.check_clarity(topic)
-
-
-async def generate_plan(state: dict[str, Any]) -> dict[str, Any]:
-    """Run the Planner agent and return the plan (without persisting).
-
-    ChatService calls this to build the plan_card before the user confirms.
-    The plan is also stored to MongoDB so the confirmed pipeline can reuse it.
-    """
-    state = await _planner.run(state)
-    plan = state.get("research_plan") or {}
-    task_id = state.get("task_id")
-    if task_id and plan:
-        try:
-            await task_service.store_stage_output(uuid.UUID(str(task_id)), "plan", plan)
-        except Exception:
-            logger.warning("plan_store_failed", task_id=str(task_id), exc_info=True)
-    return plan
-
-
-# ── B-plan modify router (T??): classify + revise ──────────────────────
-#
-# The modify action is a *router*: one classification node decides whether the
-# user's modification is an augmentation (add a viewpoint / narrow scope) or a
-# revision (replace/delete core questions — change direction). Augment goes to
-# a soft-guidance outlet (user_focus_notes read by Writer/Synthesizer); revise
-# goes to the source-revision outlet (Planner revise mode produces a new plan).
-# On any classification failure we default to augment — see D1 in the plan:
-# wrongly classifying a revise as augment is the worse failure (the source plan
-# is left wrong, retrieval/analysis set on the wrong direction), while wrongly
-# classifying an augment as revise only costs one avoidable planner revision.
-
-
-_CLASSIFY_SYSTEM = """You classify a user's modification to a research plan.
-
-You receive the current plan (its research questions and search keywords) and
-the user's modification text. Decide which kind of change it is:
-
-- "augment": the user adds a viewpoint, narrows the scope, or asks to pay extra
-  attention to something — WITHOUT rejecting or replacing the existing core
-  research questions. The plan's direction stays the same.
-- "revise": the user wants to replace or delete existing core questions, or
-  fundamentally change the research direction (e.g. "drop the performance angle,
-  analyse cost instead"). The plan's direction changes.
-
-Return STRICT JSON only: {"mode": "augment"} or {"mode": "revise"}. No prose."""
+    return await planner.check_clarity(topic)
 
 
 async def classify_modification(
-    original_plan: dict[str, Any], modifications: str
+    original_plan: dict[str, Any], modifications: str,
 ) -> str:
-    """Classify a modify action as "augment" or "revise" (B-plan router).
-
-    On ANY failure (LLM error, non-JSON, unexpected value) it returns
-    "augment" — the safer default (D1). Never raises.
-    """
+    """Classify a modify action as 'augment' or 'revise' (B-plan router)."""
     if not modifications or not str(modifications).strip():
         return "augment"
 
@@ -497,82 +311,46 @@ async def classify_modification(
         ] if isinstance(keywords, list) else [],
     }
 
-    provider = get_llm_provider()
+    from backend.schemas.llm_outputs import ModificationClassifyOutput
+    model = get_chat_model("default", temperature=0.0, max_tokens=32)
+    structured = model.with_structured_output(ModificationClassifyOutput, method="json_schema")
     messages = [
-        {"role": "system", "content": _CLASSIFY_SYSTEM},
+        {"role": "system", "content": (
+            'You classify a user modification to a research plan. '
+            '"augment": add a viewpoint without rejecting core questions. '
+            '"revise": replace/delete core questions, change direction. '
+            'Return JSON only: {"mode": "augment"} or {"mode": "revise"}. No prose.'
+        )},
         {"role": "user", "content": (
             f"当前计划:\n{json.dumps(plan_digest, ensure_ascii=False)}\n\n"
             f"用户修改:\n{str(modifications).strip()}"
         )},
     ]
 
-    raw = ""
-    for attempt in range(2):  # one retry for empty responses (flash models)
-        try:
-            raw = await provider.chat(messages=messages, temperature=0.0, max_tokens=32)
-        except Exception:
-            logger.warning("modification_classify_failed", exc_info=True)
-            return "augment"
-        if raw and raw.strip():
-            break
-        logger.warning(
-            "modification_classify_empty", attempt=attempt + 1,
-        )
-
-    parsed = safe_json_loads(raw)
-    mode = parsed.get("mode") if isinstance(parsed, dict) else None
-    if mode not in ("augment", "revise"):
-        logger.warning(
-            "modification_classify_unexpected",
-            raw_preview=str(raw)[:120],
-            mode=mode,
-        )
+    try:
+        output: ModificationClassifyOutput = await structured.ainvoke(messages)
+        mode = output.mode
+    except Exception:
+        logger.warning("modification_classify_failed", exc_info=True)
         return "augment"
 
+    if mode not in ("augment", "revise"):
+        return "augment"
     logger.info("modification_classified", mode=mode)
     return mode
 
 
-async def revise_plan(
-    state: dict[str, Any], original_plan: dict[str, Any], directive: str
-) -> dict[str, Any]:
-    """Run the Planner in revise mode and return a revised plan.
-
-    The Planner receives the original plan + the user's revision directive and
-    produces a new plan that keeps the non-conflicting parts and replaces the
-    conflicting ones. The revised plan is persisted to MongoDB (stage="plan_rev")
-    so the run history is preserved.
-    """
-    revise_state = {
-        **state,
-        "plan_to_revise": original_plan,
-        "modification_directive": directive,
-    }
-    state = await _planner.run(revise_state)
-    plan = state.get("research_plan") or {}
-    task_id = state.get("task_id")
-    if task_id and plan:
-        try:
-            await task_service.store_stage_output(uuid.UUID(str(task_id)), "plan_rev", plan)
-        except Exception:
-            logger.warning("plan_rev_store_failed", task_id=str(task_id), exc_info=True)
-    return plan
-
-
-# ── Registry helper for main.py wiring ─────────────────────────────────
+# ── Registry ───────────────────────────────────────────────────────────
 
 
 def register_agents() -> None:
-    """Register all research agents with the AgentRegistry (Constitution V)."""
     from backend.agents.base import AgentRegistry
-
-    for agent in (_planner, _retriever, _analyzer, _synthesizer, _writer):
+    for agent in (planner, _retriever, _analyzer, _synthesizer, _writer):
         try:
             AgentRegistry.register(agent)
         except ValueError:
-            # Already registered (e.g. reload) — safe to ignore.
-            logger.debug("agent_already_registered", name=agent.name)
+            pass
     logger.info(
         "research_agents_registered",
-        agents=[a.name for a in (_planner, _retriever, _analyzer, _synthesizer, _writer)],
+        agents=[a.name for a in (planner, _retriever, _analyzer, _synthesizer, _writer)],
     )

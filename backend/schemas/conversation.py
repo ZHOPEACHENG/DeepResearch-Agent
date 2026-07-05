@@ -72,6 +72,12 @@ class PlanActionRequest(BaseModel):
     modifications: str | None = Field(None, description="Required if action=modify")
 
 
+class GapActionRequest(BaseModel):
+    """Request body for acting on a gap question."""
+    action: Literal["answer", "skip"]
+    conversation_id: UUID | None = None
+
+
 class MessageRead(BaseModel):
     """Message as returned to the client."""
     id: UUID

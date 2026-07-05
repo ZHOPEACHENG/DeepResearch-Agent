@@ -248,6 +248,25 @@ export const useConversationStore = defineStore('conversations', () => {
             phaseLabel.value = '分析完成，检测知识缺口'
             break
 
+          case 'gap_question':
+            // Gap question card persisted by backend via _mirror_pipeline_event.
+            // Frontend renders it inline within the message list.
+            if (event.data.messageId) {
+              messages.value.push({
+                id: event.data.messageId as string,
+                conversationId: convId,
+                role: 'assistant',
+                content: '',
+                messageType: 'gap_question',
+                parentMessageId: parentMessageId || null,
+                metadata: event.data as Record<string, unknown>,
+                tokenCount: 0,
+                createdAt: new Date().toISOString(),
+              })
+            }
+            phaseLabel.value = `检测到 ${(event.data.gaps as any[])?.length || 0} 个关键知识缺口`
+            break
+
           // Final report — backend persisted a report_card message.
           case 'report_complete':
             messages.value.push({

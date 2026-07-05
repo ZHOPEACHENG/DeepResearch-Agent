@@ -1,5 +1,5 @@
 """
-Planner agent — research planning (T051).
+Planner — research planning.
 
 Analyzes a research topic and decomposes it into a hierarchical question
 tree (core research questions + sub-questions) plus prioritized search
@@ -18,7 +18,8 @@ import json
 from typing import Any
 
 from backend.agents.base import Agent
-from backend.tools.llm import get_llm_provider, safe_json_loads
+from backend.tools.llm import get_chat_model
+from backend.schemas.llm_outputs import ClarityCheckOutput, PlanOutput
 from backend.utils.datetime import now_iso
 from backend.utils.logging import get_logger
 
@@ -37,25 +38,11 @@ Decompose the topic into a small hierarchy of research questions (core questions
 each with a few sub-questions), and generate search keywords covering both the
 user's likely language (Chinese) and English academic terminology.
 
-Return STRICT JSON only (no markdown fences, no prose) with this exact shape:
-{
-  "research_questions": [
-    {"id": "q1", "question": "core question text", "sub_questions": [
-      {"id": "q1.1", "question": "sub question text", "priority": 1}
-    ]}
-  ],
-  "search_keywords": [
-    {"keyword": "keyword text", "language": "en|zh", "priority": 1}
-  ],
-  "expected_sources": ["web", "arxiv", "semantic_scholar"]
-}
-
 Rules:
 - 3 to 5 core questions; each with 0 to 3 sub-questions.
 - Question ids are stable short strings (q1, q1.1, q2, ...).
 - 6 to 12 search keywords, mixing Chinese and English; priority 1 = highest.
-- expected_sources should list the source types you recommend.
-- Output ONLY the JSON object."""
+- expected_sources should list the source types you recommend."""
 
 
 _PLANNER_REVISE_SYSTEM = """You are a senior academic research planner revising an existing plan.
@@ -72,25 +59,11 @@ Produce a REVISED plan that:
   that still serve the revised direction).
 - Keeps the same JSON shape as the original.
 
-Return STRICT JSON only (no markdown fences, no prose) with this exact shape:
-{
-  "research_questions": [
-    {"id": "q1", "question": "core question text", "sub_questions": [
-      {"id": "q1.1", "question": "sub question text", "priority": 1}
-    ]}
-  ],
-  "search_keywords": [
-    {"keyword": "keyword text", "language": "en|zh", "priority": 1}
-  ],
-  "expected_sources": ["web", "arxiv", "semantic_scholar"]
-}
-
 Rules:
 - 3 to 5 core questions; each with 0 to 3 sub-questions.
 - Question ids are stable short strings (q1, q1.1, q2, ...).
 - 6 to 12 search keywords, mixing Chinese and English; priority 1 = highest.
-- expected_sources should list the source types you recommend.
-- Output ONLY the JSON object."""
+- expected_sources should list the source types you recommend."""
 
 
 _CLARITY_SYSTEM = (
@@ -118,24 +91,18 @@ class PlannerAgent(Agent):
         Returns ``{"is_clear": bool, "clarifying_question": str}``.
         LLM failures default to ``is_clear=True`` to avoid blocking the pipeline.
         """
-        provider = get_llm_provider("planner")
+        model = get_chat_model("planner", temperature=0.0, max_tokens=128)
+        structured = model.with_structured_output(ClarityCheckOutput, method="json_schema")
         messages = [
             {"role": "system", "content": _CLARITY_SYSTEM},
             {"role": "user", "content": f"研究查询：{topic}"},
         ]
         try:
-            raw = await provider.chat(messages=messages, temperature=0.0, max_tokens=128)
+            result = await structured.ainvoke(messages)
+            return {"is_clear": result.is_clear, "clarifying_question": result.clarifying_question}
         except Exception:
             logger.warning("clarity_check_llm_failed", exc_info=True)
             return {"is_clear": True, "clarifying_question": ""}
-
-        parsed = safe_json_loads(raw)
-        if not parsed or not isinstance(parsed, dict):
-            return {"is_clear": True, "clarifying_question": ""}
-        return {
-            "is_clear": bool(parsed.get("is_clear", True)),
-            "clarifying_question": str(parsed.get("clarifying_question", "") or ""),
-        }
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """
@@ -169,7 +136,6 @@ class PlannerAgent(Agent):
             # Revise mode: inherit the original topic (revision keeps the
             # subject; only the research direction changes).
             topic = plan_to_revise.get("topic") or state.get("topic") or ""
-            provider = get_llm_provider("planner")
             messages = [
                 {"role": "system", "content": _PLANNER_REVISE_SYSTEM},
                 {"role": "user", "content": (
@@ -189,7 +155,6 @@ class PlannerAgent(Agent):
             if not topic or not str(topic).strip():
                 logger.error("planner_no_topic", task_id=state.get("task_id"))
                 raise ValueError("研究主题为空，无法生成研究计划")
-            provider = get_llm_provider("planner")
             messages = [
                 {"role": "system", "content": _PLANNER_SYSTEM},
                 {"role": "user", "content": f"研究主题：{topic}"},
@@ -201,8 +166,10 @@ class PlannerAgent(Agent):
                 topic=str(topic)[:120],
             )
 
+        model = get_chat_model("planner", temperature=0.3, max_tokens=2048)
+        structured = model.with_structured_output(PlanOutput, method="json_schema")
         try:
-            raw = await provider.chat(messages=messages, temperature=0.3, max_tokens=2048)
+            output: PlanOutput = await structured.ainvoke(messages)
         except Exception:
             logger.error(
                 "planner_llm_failed",
@@ -211,7 +178,7 @@ class PlannerAgent(Agent):
             )
             raise
 
-        plan = self._parse_plan(raw, topic=topic, task_id=state.get("task_id"))
+        plan = _plan_output_to_dict(output, topic=topic, task_id=state.get("task_id"))
         state["research_plan"] = plan
 
         logger.info(
@@ -224,88 +191,46 @@ class PlannerAgent(Agent):
         )
         return state
 
-    # ── Helpers ────────────────────────────────────────────────────────
 
-    def _parse_plan(self, raw: str, *, topic: str, task_id: Any) -> dict[str, Any]:
-        """Parse and normalize the LLM's JSON plan, with a safe fallback."""
-        parsed = safe_json_loads(raw)
-        if parsed is None:
-            logger.warning(
-                "planner_json_parse_failed",
-                task_id=task_id,
-                preview=raw[:200],
-            )
-            parsed = {}
+# ── Module-level helpers ────────────────────────────────────────────────
 
-        questions = self._normalize_questions(parsed.get("research_questions"))
-        keywords = self._normalize_keywords(parsed.get("search_keywords"))
-        expected = parsed.get("expected_sources") or ["web", "arxiv", "semantic_scholar"]
 
-        return {
-            "task_id": str(task_id) if task_id else "",
-            "conversation_id": None,
-            "topic": str(topic),
-            "research_questions": questions,
-            "search_keywords": keywords,
-            "expected_sources": expected,
-            "generated_at": now_iso(),
-        }
+def _plan_output_to_dict(
+    output: PlanOutput, *, topic: str, task_id: Any,
+) -> dict[str, Any]:
+    """Convert a typed ``PlanOutput`` to the canonical dict shape.
 
-    def _normalize_questions(self, raw: Any) -> list[dict[str, Any]]:
-        """Coerce the LLM output into the canonical question-tree shape."""
-        if not isinstance(raw, list):
-            return []
-        out: list[dict[str, Any]] = []
-        for i, q in enumerate(raw[:_MAX_CORE_QUESTIONS], start=1):
-            if not isinstance(q, dict):
-                continue
-            qid = str(q.get("id") or f"q{i}")
-            text = (q.get("question") or q.get("text") or "").strip()
-            if not text:
-                continue
-            subs = self._normalize_sub_questions(q.get("sub_questions"), parent=qid)
-            out.append({"id": qid, "question": text, "sub_questions": subs})
-        return out
+    Downstream consumers (Retriever, Writer) read ``research_plan`` from
+    the workflow state and expect specific keys — this converter ensures
+    the dict shape stays identical to the pre-LangChain version.
+    """
+    # Research questions — cap and fill empty IDs.
+    questions: list[dict[str, Any]] = []
+    for i, q in enumerate(output.research_questions[:_MAX_CORE_QUESTIONS], start=1):
+        qid = q.id or f"q{i}"
+        subs: list[dict[str, Any]] = []
+        for j, sq in enumerate(q.sub_questions[:_MAX_SUB_QUESTIONS], start=1):
+            sid = sq.id or f"{qid}.{j}"
+            subs.append({"id": sid, "question": sq.question, "priority": sq.priority})
+        questions.append({"id": qid, "question": q.question, "sub_questions": subs})
 
-    def _normalize_sub_questions(self, raw: Any, *, parent: str) -> list[dict[str, Any]]:
-        if not isinstance(raw, list):
-            return []
-        out: list[dict[str, Any]] = []
-        for j, sq in enumerate(raw[:_MAX_SUB_QUESTIONS], start=1):
-            if not isinstance(sq, dict):
-                continue
-            sid = str(sq.get("id") or f"{parent}.{j}")
-            text = (sq.get("question") or sq.get("text") or "").strip()
-            if not text:
-                continue
-            priority = sq.get("priority")
-            out.append({
-                "id": sid,
-                "question": text,
-                "priority": int(priority) if isinstance(priority, (int, float)) else j,
-            })
-        return out
+    # Search keywords — cap and deduplicate.
+    keywords: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for k in output.search_keywords[:_MAX_KEYWORDS]:
+        kw_lower = k.keyword.strip().lower()
+        if not kw_lower or kw_lower in seen:
+            continue
+        seen.add(kw_lower)
+        lang = k.language if k.language in ("en", "zh") else "en"
+        keywords.append({"keyword": k.keyword.strip(), "language": lang, "priority": k.priority})
 
-    def _normalize_keywords(self, raw: Any) -> list[dict[str, Any]]:
-        if not isinstance(raw, list):
-            return []
-        out: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for k in raw[:_MAX_KEYWORDS]:
-            if isinstance(k, str):
-                kw, lang, prio = k.strip(), "en", len(out) + 1
-            elif isinstance(k, dict):
-                kw = (k.get("keyword") or "").strip()
-                lang = (k.get("language") or "en").strip()
-                prio = k.get("priority", len(out) + 1)
-            else:
-                continue
-            if not kw or kw.lower() in seen:
-                continue
-            seen.add(kw.lower())
-            out.append({
-                "keyword": kw,
-                "language": lang if lang in ("en", "zh") else "en",
-                "priority": int(prio) if isinstance(prio, (int, float)) else len(out),
-            })
-        return out
+    return {
+        "task_id": str(task_id) if task_id else "",
+        "conversation_id": None,
+        "topic": str(topic),
+        "research_questions": questions,
+        "search_keywords": keywords,
+        "expected_sources": output.expected_sources,
+        "generated_at": now_iso(),
+    }
