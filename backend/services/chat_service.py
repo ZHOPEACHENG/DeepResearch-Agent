@@ -187,10 +187,16 @@ async def _run_research(
     """Run the full research pipeline via the research graph."""
     logger.info("research_flow_started", task_id="", conv_id=str(conversation_id))
 
-    # Create task
-    task = await task_service.create_task(user_id, content)
-    task_id_str = str(task.id)
-    logger.info("research_task_created", task_id=task_id_str)
+    task_id_str = ""
+    try:
+        # Create task
+        task = await task_service.create_task(user_id, content)
+        task_id_str = str(task.id)
+        logger.info("research_task_created", task_id=task_id_str)
+    except Exception as e:
+        logger.error("research_task_create_failed", conv_id=str(conversation_id), exc_info=True)
+        yield _sse("error", {"message": f"创建研究任务失败: {e}", "taskId": ""})
+        return
 
     # ── Clarity check (decision 1: planner outside graph) ──
     try:
@@ -207,14 +213,21 @@ async def _run_research(
         raise
 
     if not clarity.get("is_clear"):
-        yield _sse("plan_generated", {
-            "messageId": "",
+        # Save as a text message so the frontend shows the clarification
+        clarifying_question = clarity.get("clarifying_question", "")
+        clarify_msg = await conversation_service.save_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=clarifying_question or "请进一步描述您的研究主题",
+            message_type="text",
+            parent_message_id=user_message_id,
+            model=model,
+            metadata={"mode": mode, "status": "needs_clarification", "task_id": task_id_str},
+        )
+        yield _sse("chat_chunk", {
+            "messageId": str(clarify_msg.id),
+            "content": clarifying_question or "请进一步描述您的研究主题",
             "taskId": task_id_str,
-            "status": "needs_clarification",
-            "questions": [], "keywords": [],
-            "planText": content,
-            "clarifyingQuestion": clarity.get("clarifying_question", ""),
-            "model": model,
         })
         return
 
