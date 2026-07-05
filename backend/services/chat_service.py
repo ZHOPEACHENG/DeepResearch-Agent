@@ -117,14 +117,22 @@ async def resume_gap_action(
     logger.info("resume_gap", task_id=task_id, action=action, conv_id=str(conversation_id))
 
     # 后续 retrieval_card / report_card 需要 parent_message_id 才能落库
-    # （messages.parent_message_id 有外键约束）。这里查最近一条 gap_question
-    # 消息，继承它的 parent（即原始 user message），把 UUID(int=0) 占位替换掉。
     parent_message_id = await _resolve_gap_parent(conversation_id)
 
+    # Resume 时 LangGraph checkpointer 可能丢失 graph_input 里的顶级字段。
+    # 用 Command.update 把 task_id / conversation_id 补回去。
     graph = get_research_graph()
     config = {"configurable": {"thread_id": str(conversation_id)}}
     async for chunk in graph.astream(
-        Command(resume={"action": action}), config, stream_mode="updates",
+        Command(
+            resume={"action": action},
+            update={
+                "task_id": task_id,
+                "conversation_id": str(conversation_id),
+            },
+        ),
+        config,
+        stream_mode="updates",
     ):
         async for _ in _process_research_chunk(
             chunk, conversation_id, parent_message_id, None, "research", task_id,
