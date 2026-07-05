@@ -94,24 +94,22 @@ class AnalyzerAgent(Agent):
             state["knowledge_gaps"] = gaps
             return state
 
-        model = get_chat_model("analyzer", temperature=0.2, max_tokens=4096)
-        structured = model.with_structured_output(AnalyzerOutput, method="function_calling")
         prompt = self._build_initial_prompt(questions, initial_results)
-        messages = [
-            {"role": "system", "content": _ANALYZER_SYSTEM},
-            {"role": "user", "content": prompt},
-        ]
 
-        try:
-            output: AnalyzerOutput | None = await structured.ainvoke(messages)
-        except Exception:
-            logger.error("analyzer_llm_failed", task_id=task_id_str, exc_info=True)
-            raise
+        # First try: structured output.  This is the happy path but some
+        # models (e.g. DeepSeek reasoning variants) occasionally refuse to
+        # call the tool, returning None.
+        output = await self._try_structured_output(task_id_str, prompt)
+
+        # Fallback: prompt-based JSON extraction.  Slower but more
+        # reliable when the model won't cooperate with function calling.
+        if output is None:
+            output = await self._try_prompt_based_output(task_id_str, prompt, questions)
 
         if output is None:
             logger.warning(
-                "analyzer_null_output", task_id=task_id_str,
-                hint="structured output returned None — model may have refused tool call",
+                "analyzer_both_methods_failed", task_id=task_id_str,
+                hint="structured output + prompt fallback both returned None",
             )
             summary, gaps = self._empty_summary_with_gaps(
                 task_id_str, questions, conv_id(state),
@@ -152,6 +150,56 @@ class AnalyzerAgent(Agent):
         return state
 
     # ── Helpers ──────────────────────────────────────────────────────
+
+    async def _try_structured_output(
+        self, task_id_str: str, prompt: str,
+    ) -> AnalyzerOutput | None:
+        """Try with_structured_output first (function calling layer)."""
+        model = get_chat_model("analyzer", temperature=0.2, max_tokens=4096)
+        structured = model.with_structured_output(AnalyzerOutput, method="function_calling")
+        messages = [
+            {"role": "system", "content": _ANALYZER_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            return await structured.ainvoke(messages)
+        except Exception:
+            logger.error("analyzer_structured_failed", task_id=task_id_str, exc_info=True)
+            return None
+
+    async def _try_prompt_based_output(
+        self, task_id_str: str, prompt: str, questions: list[str],
+    ) -> AnalyzerOutput | None:
+        """Fallback: ask the model for raw JSON and parse manually."""
+        from backend.tools.llm import safe_json_loads
+
+        model = get_chat_model("analyzer", temperature=0.1, max_tokens=4096)
+        q_text = "\n".join(questions) if questions else "无"
+        system = (
+            f"{_ANALYZER_SYSTEM}\n\n"
+            "CRITICAL: You MUST respond with a valid JSON object ONLY, no markdown, "
+            "no explanation.  The JSON must have exactly three top-level keys:\n"
+            '  "summary_content": string (Markdown),\n'
+            '  "citation_map": {"chunk_1": ["id1","id2"], ...},\n'
+            '  "knowledge_gaps": [{"related_question_id":"q1","description":"...",'
+            '"severity":"critical|moderate|minor","suggested_query":"..."}, ...]\n'
+            'Respond with ONLY the JSON, no ``` fences.'
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            response = await model.ainvoke(messages)
+            text = response.content if hasattr(response, "content") else str(response)
+            data = safe_json_loads(text)
+            if not isinstance(data, dict):
+                logger.warning("analyzer_fallback_not_dict", task_id=task_id_str)
+                return None
+            return AnalyzerOutput.model_validate(data)
+        except Exception:
+            logger.error("analyzer_fallback_failed", task_id=task_id_str, exc_info=True)
+            return None
 
     def _question_lines(self, plan: dict[str, Any]) -> list[str]:
         """Flatten the question tree into 'qid: question' lines."""
