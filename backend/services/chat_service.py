@@ -424,7 +424,8 @@ async def _run_research(
                     payload = interrupts[0].value
                     if isinstance(payload, dict) and payload.get("type") == "gap_question":
                         gaps = payload.get("gaps") or []
-                        data = {"taskId": task_id_str, "gaps": gaps, "round": payload.get("round", 1)}
+                        data = {"taskId": task_id_str, "gaps": gaps, "round": payload.get("round", 1),
+                               "status": "pending"}
                         msg = await conversation_service.save_message(
                             conversation_id=conversation_id, role="assistant", content="",
                             message_type="gap_question", parent_message_id=user_message_id, model=model,
@@ -447,7 +448,8 @@ async def _run_research(
         payload = interrupts[0].value if interrupts else {}
         if isinstance(payload, dict) and payload.get("type") == "gap_question":
             gaps = payload.get("gaps") or []
-            data = {"taskId": task_id_str, "gaps": gaps, "round": payload.get("round", 1)}
+            data = {"taskId": task_id_str, "gaps": gaps, "round": payload.get("round", 1),
+                "status": "pending"}
             msg = await conversation_service.save_message(
                 conversation_id=conversation_id, role="assistant", content="",
                 message_type="gap_question", parent_message_id=user_message_id, model=model,
