@@ -92,7 +92,7 @@ class PlannerAgent(Agent):
         LLM failures default to ``is_clear=True`` to avoid blocking the pipeline.
         """
         model = get_chat_model("planner", temperature=0.0, max_tokens=128)
-        structured = model.with_structured_output(ClarityCheckOutput, method="json_schema")
+        structured = model.with_structured_output(ClarityCheckOutput, method="function_calling")
         messages = [
             {"role": "system", "content": _CLARITY_SYSTEM},
             {"role": "user", "content": f"研究查询：{topic}"},
@@ -167,7 +167,7 @@ class PlannerAgent(Agent):
             )
 
         model = get_chat_model("planner", temperature=0.3, max_tokens=2048)
-        structured = model.with_structured_output(PlanOutput, method="json_schema")
+        structured = model.with_structured_output(PlanOutput, method="function_calling")
         try:
             output: PlanOutput | None = await structured.ainvoke(messages)
         except Exception:

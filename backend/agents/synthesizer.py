@@ -95,7 +95,7 @@ class SynthesizerAgent(Agent):
             return state
 
         model = get_chat_model("default", temperature=0.2, max_tokens=4096)
-        structured = model.with_structured_output(SynthesizerOutput, method="json_schema")
+        structured = model.with_structured_output(SynthesizerOutput, method="function_calling")
         messages = [
             {"role": "system", "content": _SYNTH_SYSTEM},
             {"role": "user", "content": self._build_prompt(

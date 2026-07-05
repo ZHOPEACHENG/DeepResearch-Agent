@@ -95,7 +95,7 @@ class WriterAgent(Agent):
         )
 
         model = get_chat_model("writer", temperature=0.3, max_tokens=6000)
-        structured = model.with_structured_output(WriterOutput, method="json_schema")
+        structured = model.with_structured_output(WriterOutput, method="function_calling")
         messages = [
             {"role": "system", "content": _WRITER_SYSTEM},
             {"role": "user", "content": self._build_prompt(

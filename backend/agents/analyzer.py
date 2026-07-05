@@ -95,7 +95,7 @@ class AnalyzerAgent(Agent):
             return state
 
         model = get_chat_model("analyzer", temperature=0.2, max_tokens=4096)
-        structured = model.with_structured_output(AnalyzerOutput, method="json_schema")
+        structured = model.with_structured_output(AnalyzerOutput, method="function_calling")
         prompt = self._build_initial_prompt(questions, initial_results)
         messages = [
             {"role": "system", "content": _ANALYZER_SYSTEM},

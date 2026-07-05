@@ -313,7 +313,7 @@ async def classify_modification(
 
     from backend.schemas.llm_outputs import ModificationClassifyOutput
     model = get_chat_model("default", temperature=0.0, max_tokens=32)
-    structured = model.with_structured_output(ModificationClassifyOutput, method="json_schema")
+    structured = model.with_structured_output(ModificationClassifyOutput, method="function_calling")
     messages = [
         {"role": "system", "content": (
             'You classify a user modification to a research plan. '
