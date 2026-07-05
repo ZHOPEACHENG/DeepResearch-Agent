@@ -65,6 +65,16 @@ export async function actOnPlan(
   return data
 }
 
+export async function actOnGap(
+  taskId: string, action: 'answer' | 'skip', conversationId: string,
+): Promise<{ status: string; action: string }> {
+  const { data } = await apiClient.post<{ status: string; action: string }>(
+    `/conversations/research/${taskId}/gap-action`,
+    { action, conversation_id: conversationId },
+  )
+  return data
+}
+
 /**
  * SSE streaming — send a message and receive streaming events.
  *

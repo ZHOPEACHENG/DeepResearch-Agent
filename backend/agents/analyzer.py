@@ -163,7 +163,11 @@ class AnalyzerAgent(Agent):
         ]
         try:
             return await structured.ainvoke(messages)
-        except Exception:
+        except Exception as e:
+            # thinking 冲突向上抛，让 _run_research 捕获并提示用户。
+            from backend.services.chat_service import _is_thinking_conflict
+            if _is_thinking_conflict(e):
+                raise
             logger.error("analyzer_structured_failed", task_id=task_id_str, exc_info=True)
             return None
 

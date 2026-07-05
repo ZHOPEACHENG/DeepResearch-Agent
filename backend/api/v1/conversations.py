@@ -41,6 +41,15 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/conversations")
 
 
+def _log_task_exception(task: asyncio.Task) -> None:
+    """asyncio.create_task 的 done callback — 把后台任务异常落到结构化日志。"""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("background_task_failed", exc_info=exc)
+
+
 # ── T3b-014: CRUD ──────────────────────────────────────────────────────
 
 @router.get("", response_model=ConversationListResponse)
@@ -304,9 +313,10 @@ async def plan_action(
         user_id=str(current_user.id),
         action=body.action,
     )
-    asyncio.create_task(
+    task = asyncio.create_task(
         chat_service.resume_plan_action(message_id, body.action, body.modifications)
     )
+    task.add_done_callback(_log_task_exception)
     return {"status": "ok", "action": body.action}
 
 
@@ -328,9 +338,24 @@ async def gap_action(
     )
     if not body.conversation_id:
         raise HTTPException(status_code=400, detail="缺少 conversation_id")
-    asyncio.create_task(
+
+    # 属主校验：conversation 必须属于当前用户（与 plan_action 一致）。
+    try:
+        await conversation_service.get_conversation(
+            body.conversation_id, current_user.id,
+        )
+    except ValueError:
+        logger.warning(
+            "api_gap_action_not_found",
+            conv_id=str(body.conversation_id),
+            user_id=str(current_user.id),
+        )
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    task = asyncio.create_task(
         chat_service.resume_gap_action(body.conversation_id, task_id, body.action)
     )
+    task.add_done_callback(_log_task_exception)
     return {"status": "ok", "action": body.action}
 
 

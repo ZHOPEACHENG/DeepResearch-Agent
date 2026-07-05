@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useConversationStore } from '@/stores/conversations'
 import { useAuthStore } from '@/stores/auth'
+import * as convApi from '@/api/conversations'
 import { ElMessageBox } from 'element-plus'
 import { Cpu, Loading } from '@element-plus/icons-vue'
 
@@ -90,6 +91,22 @@ async function handleRejectPlan(messageId: string) {
     return // user cancelled
   }
   store.actOnPlan(messageId, 'reject')
+}
+
+// ── Gap question action ────────────────────────────────────────────────
+// 用户选择补充检索或跳过知识缺口。后端 resume 图后，后续 retrieval/report
+// 卡片会先写入 DB，前端刷新对话即可看到（当前阶段靠手动/切换触发拉取）。
+async function handleGapAction(msg: { id: string; metadata?: { taskId?: string } }, action: 'answer' | 'skip') {
+  const taskId = msg.metadata?.taskId
+  if (!taskId || !convId.value) return
+  const target = store.messages.find(m => m.id === msg.id)
+  if (target) target.metadata = { ...target.metadata, status: action === 'answer' ? 'answered' : 'skipped' }
+  try {
+    await convApi.actOnGap(taskId, action, convId.value)
+  } catch (e) {
+    console.error('[ChatPage] gap action failed:', e)
+    if (target) target.metadata = { ...target.metadata, status: 'pending' }
+  }
 }
 
 // ── Modify plan dialog (B-plan modify router) ─────────────────────────
@@ -297,6 +314,50 @@ watch(() => store.messages.length, scrollToBottom)
                   </ul>
                 </el-collapse-item>
               </el-collapse>
+            </div>
+            <!-- Gap question card -->
+            <div
+              class="msg-card gap"
+              v-else-if="msg.messageType === 'gap_question'"
+            >
+              <h4>知识缺口 · 第 {{ msg.metadata?.round || 1 }} 轮</h4>
+              <p class="gap-hint">以下问题暂未找到充分资料，是否补充检索？</p>
+              <ul v-if="Array.isArray(msg.metadata?.gaps)" class="gap-list">
+                <li
+                  v-for="(g, gidx) in (msg.metadata?.gaps as any[])"
+                  :key="gidx"
+                >
+                  <el-tag
+                    size="small"
+                    :type="g.severity === 'critical' ? 'danger' : 'warning'"
+                    style="margin-right:6px"
+                  >{{ g.severity }}</el-tag>
+                  <span>{{ g.description }}</span>
+                </li>
+              </ul>
+              <div
+                class="gap-actions"
+                v-if="msg.metadata?.status === 'pending'"
+              >
+                <el-button
+                  type="primary" size="small"
+                  :disabled="store.isStreaming"
+                  @click="handleGapAction(msg, 'answer')"
+                >补充检索</el-button>
+                <el-button
+                  size="small"
+                  :disabled="store.isStreaming"
+                  @click="handleGapAction(msg, 'skip')"
+                >跳过</el-button>
+              </div>
+              <el-tag
+                v-else-if="msg.metadata?.status === 'answered'"
+                type="success" size="small" style="margin-top:8px"
+              >已补充检索</el-tag>
+                <el-tag
+                  v-else-if="msg.metadata?.status === 'skipped'"
+                  type="info" size="small" style="margin-top:8px"
+                >已跳过</el-tag>
             </div>
             <!-- Report card -->
             <div class="msg-card report" v-else-if="msg.messageType === 'report_card'">

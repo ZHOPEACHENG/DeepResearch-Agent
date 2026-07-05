@@ -121,6 +121,7 @@ async def _retriever_node(state: ResearchState) -> dict[str, Any]:
     return {
         "retrieval_results": result.get("retrieval_results", []),
         "all_retrieval_results": result.get("all_retrieval_results", []),
+        "analysis_round": state.get("analysis_round", 1),
     }
 
 
@@ -138,6 +139,7 @@ async def _analyzer_node(state: ResearchState) -> dict[str, Any]:
     return {
         "knowledge_summary": result.get("knowledge_summary"),
         "knowledge_gaps": result.get("knowledge_gaps", []),
+        "analysis_round": state.get("analysis_round", 1),
     }
 
 
@@ -328,9 +330,14 @@ async def classify_modification(
     ]
 
     try:
-        output: ModificationClassifyOutput = await structured.ainvoke(messages)
-        mode = output.mode
-    except Exception:
+        output = await structured.ainvoke(messages)
+        mode = output.mode if output is not None else None
+    except Exception as e:
+        # thinking 冲突向上抛，由 _run_research 捕获并提示用户关闭开关；
+        # 其他异常降级为 augment（保守：不替换核心问题）。
+        from backend.services.chat_service import _is_thinking_conflict
+        if _is_thinking_conflict(e):
+            raise
         logger.warning("modification_classify_failed", exc_info=True)
         return "augment"
 

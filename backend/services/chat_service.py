@@ -314,9 +314,11 @@ async def _run_research(
             raise
         if mode_decision == "revise":
             try:
-                # Revise: re-run planner in revise mode
+                # Revise: re-run planner in revise mode.
+                # 用户修改意图同样需透传给下游（与 augment 对称）。
                 plan_state["plan_to_revise"] = plan
                 plan_state["modification_directive"] = modifications
+                plan_state["user_focus_notes"] = modifications
                 plan_state = await planner.run(plan_state)
             except Exception as e:
                 if _is_thinking_conflict(e):
@@ -356,16 +358,21 @@ async def _run_research(
                 yield _sse("plan_action", {"taskId": task_id_str, "action": action_type})
                 return
         else:
-            # Augment: set user_focus_notes for Writer/Synthesizer
+            # Augment: set user_focus_notes for Writer/Synthesizer.
+            # 不在这里发 SSE；后续主分支统一发带 augment 信息的 accept。
             plan_state["user_focus_notes"] = modifications
-            yield _sse("plan_action", {
-                "taskId": task_id_str, "action": "modify", "modifyOutcome": "augment",
-                "userFocusNotes": modifications,
-            })
 
     # ── Start graph from retriever (plan confirmed) ──
-    logger.info("research_graph_start", task_id=task_id_str)
-    yield _sse("plan_action", {"taskId": task_id_str, "action": "accept"})
+    augment_notes = plan_state.get("user_focus_notes", "")
+    if augment_notes:
+        logger.info("research_graph_start", task_id=task_id_str, mode="augment")
+        yield _sse("plan_action", {
+            "taskId": task_id_str, "action": "accept",
+            "modify_outcome": "augment", "user_focus_notes": augment_notes,
+        })
+    else:
+        logger.info("research_graph_start", task_id=task_id_str)
+        yield _sse("plan_action", {"taskId": task_id_str, "action": "accept"})
     graph_input = {
         "task_id": task_id_str,
         "user_id": str(user_id),
@@ -379,13 +386,37 @@ async def _run_research(
         async for chunk in get_research_graph().astream(
             graph_input, config, stream_mode="updates",
         ):
+            # LangGraph 1.2.4 在 interrupt() 时抛 GraphInterrupt 是内部
+            # 抑制型异常；updates 模式下 astream 不抛，而是发一个
+            # {"__interrupt__": (Interrupt(value=..., id=...),)} chunk 后
+            # 正常结束流。这里识别该 chunk，提取 payload 通知前端。
+            if "__interrupt__" in chunk:
+                interrupts = chunk["__interrupt__"]
+                if interrupts:
+                    payload = interrupts[0].value
+                    if isinstance(payload, dict) and payload.get("type") == "gap_question":
+                        gaps = payload.get("gaps") or []
+                        data = {"taskId": task_id_str, "gaps": gaps, "round": payload.get("round", 1)}
+                        msg = await conversation_service.save_message(
+                            conversation_id=conversation_id, role="assistant", content="",
+                            message_type="gap_question", parent_message_id=user_message_id, model=model,
+                            metadata={
+                                "taskId": task_id_str, "gaps": gaps,
+                                "round": data["round"], "status": "pending", "mode": mode,
+                            },
+                        )
+                        data["messageId"] = str(msg.id)
+                        yield _sse("gap_question", data)
+                return
             async for event in _process_research_chunk(
                 chunk, conversation_id, user_message_id, model, mode, task_id_str,
             ):
                 yield event
     except GraphInterrupt as gi:
-        # ── Gap question interrupt ──
-        payload = gi.args[0] if gi.args else {}
+        # 防御性兜底：未来 LangGraph 版本若恢复抛异常机制。
+        # gi.args[0] 在抛出路径下是 (Interrupt(...),) tuple。
+        interrupts = gi.args[0] if gi.args else ()
+        payload = interrupts[0].value if interrupts else {}
         if isinstance(payload, dict) and payload.get("type") == "gap_question":
             gaps = payload.get("gaps") or []
             data = {"taskId": task_id_str, "gaps": gaps, "round": payload.get("round", 1)}

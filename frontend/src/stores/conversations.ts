@@ -181,24 +181,23 @@ export const useConversationStore = defineStore('conversations', () => {
           case 'plan_action': {
             const action = (event.data.action as string) || ''
             const taskId = (event.data.taskId as string) || ''
-            const outlet = (event.data.modify_outlet as string) || ''
+            const outcome = (event.data.modify_outcome as string) || ''
             const planMsg = [...messages.value]
               .reverse()
               .find(m => m.messageType === 'plan_card'
                 && (m.metadata?.taskId === taskId || m.metadata?.status === 'pending_confirmation'))
             if (planMsg) {
-              // revise outlet already set the card to 'revised' via
-              // plan_generated — don't overwrite it. augment outlet marks
-              // 'accepted_with_notes' so the card shows the user's focus.
+              // augment 是 accept 的一种：后端统一发 action=accept + modify_outcome=augment。
+              // revise 由 plan_generated 事件单独把卡片置为 'revised'，这里不动。
               let nextStatus: string
               if (action === 'accept') {
-                nextStatus = 'accepted'
+                nextStatus = outcome === 'augment' ? 'accepted_with_notes' : 'accepted'
               } else if (action === 'modify') {
-                nextStatus = outlet === 'revise' ? 'revised' : 'accepted_with_notes'
+                nextStatus = outcome === 'revise' ? 'revised' : 'accepted_with_notes'
               } else {
                 nextStatus = 'rejected'
               }
-              // Only advance the status forward; skip if the revise outlet
+              // Only advance the status forward; skip if the revise outcome
               // already established 'revised' (avoid clobbering with itself).
               if (nextStatus !== 'revised' || planMsg.metadata?.status !== 'revised') {
                 planMsg.metadata = {
@@ -206,7 +205,7 @@ export const useConversationStore = defineStore('conversations', () => {
                   status: nextStatus,
                 }
               }
-              // Augment outlet: carry the user's focus notes into the card so
+              // Augment: carry the user's focus notes into the card so
               // the tag renders them without needing a reload.
               if (event.data.user_focus_notes) {
                 planMsg.metadata = {
