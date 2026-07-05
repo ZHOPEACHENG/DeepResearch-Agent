@@ -185,13 +185,18 @@ async def _run_research(
     mode: Literal["chat", "research"],
 ) -> AsyncGenerator[dict, None]:
     """Run the full research pipeline via the research graph."""
+    logger.info("research_flow_started", task_id="", conv_id=str(conversation_id))
+
     # Create task
     task = await task_service.create_task(user_id, content)
     task_id_str = str(task.id)
+    logger.info("research_task_created", task_id=task_id_str)
 
     # ── Clarity check (decision 1: planner outside graph) ──
     try:
+        logger.info("research_clarity_check_start", task_id=task_id_str)
         clarity = await research_service.check_clarity(content)
+        logger.info("research_clarity_check_done", task_id=task_id_str, is_clear=clarity.get("is_clear"))
     except Exception as e:
         if _is_thinking_conflict(e):
             yield _sse("error", {
@@ -219,7 +224,9 @@ async def _run_research(
         "user_id": str(user_id), "conversation_id": str(conversation_id),
     }
     try:
+        logger.info("research_planner_start", task_id=task_id_str)
         plan_state = await planner.run(plan_state)
+        logger.info("research_planner_done", task_id=task_id_str)
     except Exception as e:
         if _is_thinking_conflict(e):
             yield _sse("error", {
@@ -344,6 +351,7 @@ async def _run_research(
             })
 
     # ── Start graph from retriever (plan confirmed) ──
+    logger.info("research_graph_start", task_id=task_id_str)
     yield _sse("plan_action", {"taskId": task_id_str, "action": "accept"})
     graph_input = {
         "task_id": task_id_str,
