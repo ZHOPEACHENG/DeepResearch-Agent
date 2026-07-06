@@ -289,10 +289,6 @@ def summarize_sources(results: list[dict]) -> list[dict[str, Any]]:
 # ── Plan / clarity helpers (used by chat_service) ──────────────────────
 
 
-async def check_clarity(topic: str) -> dict[str, Any]:
-    return await planner.check_clarity(topic)
-
-
 async def classify_modification(
     original_plan: dict[str, Any], modifications: str,
 ) -> str:

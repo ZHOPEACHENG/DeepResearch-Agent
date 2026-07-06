@@ -179,7 +179,7 @@ async def _run_research(
     task_id_str = str(task.id)
 
     # ── Clarity check (decision 1: planner outside graph) ──
-    clarity = await research_service.check_clarity(content)
+    clarity = await planner.check_clarity(content)
     if not clarity.get("is_clear"):
         yield _sse("plan_generated", {
             "messageId": "",
