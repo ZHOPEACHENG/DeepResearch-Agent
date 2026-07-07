@@ -18,7 +18,7 @@ import json
 from typing import Any
 
 from backend.agents.base import Agent
-from backend.tools.llm import get_chat_model
+from backend.tools.llm import get_chat_model, safe_json_loads
 from backend.schemas.llm_outputs import ClarityCheckOutput, PlanOutput
 from backend.utils.datetime import now_iso
 from backend.utils.logging import get_logger
@@ -66,17 +66,29 @@ Rules:
 - expected_sources should list the source types you recommend."""
 
 
-_CLARITY_SYSTEM = (
-    "你用来判断用户的查询是否足够具体以开展研究。"
-    "如果查询清晰、具体且可研究，返回 is_clear=true。"
-    "如果它模糊、歧义或范围太广，返回 is_clear=false，"
-    "并提供一句简洁的中文澄清问题来帮助缩小范围。"
-    "只返回严格 JSON："
-    '{"is_clear": true, "clarifying_question": ""} '
-    "或 "
-    '{"is_clear": false, "clarifying_question": "你的问题是..."}。'
-    "不要输出任何其他内容。"
-)
+_CLARITY_SYSTEM = '''
+你的任务是评估一个研究查询是否足够清晰具体，可以开展研究。
+
+按以下三步分析：
+1. 将你从查询中理解到的内容总结在「understood」字段（中文）。
+2. 逐条列出「unclear_aspects」：哪些维度太宽泛/模糊/缺失。
+   -- 范围太广（如"新能源汽车发展趋势"）
+   -- 缺少地域或时间限定
+   -- 关键术语未定义
+   -- 目标受众/角度不明确
+3. 如果 is_clear=True，clarifying_question 留空。
+   如果 is_clear=False，clarifying_question 要引导用户给出
+   具体方向（给出 3-5 个具体选项，而不是开放式地请细化）。
+
+判断标准：
+- 查询包含：具体主题 + 可辨识的范围或角度 -> is_clear=True
+- 查询只有一个宽泛的关键词/短语 -> is_clear=False
+- 如果查询已包含至少一个具体限定（时间/地域/方法/角度），即使
+  还能更细，也视为 is_clear=True
+
+只返回纯 JSON（不要 Markdown 包装），形状为：
+{"is_clear": false, "understood": "...", "unclear_aspects": ["..."], "clarifying_question": "..."}
+'''
 
 
 class PlannerAgent(Agent):
@@ -88,21 +100,34 @@ class PlannerAgent(Agent):
     async def check_clarity(self, topic: str) -> dict[str, Any]:
         """Check whether a user's research query is specific enough.
 
-        Returns ``{"is_clear": bool, "clarifying_question": str}``.
+        Returns ``{"is_clear": bool, "understood": str, "unclear_aspects": list,
+                  "clarifying_question": str}``.
         LLM failures default to ``is_clear=True`` to avoid blocking the pipeline.
         """
-        model = get_chat_model("planner", temperature=0.0, max_tokens=128)
-        structured = model.with_structured_output(ClarityCheckOutput, method="json_schema")
+        model = get_chat_model("planner", temperature=0.0, max_tokens=512)
+        structured = model.with_structured_output(ClarityCheckOutput, method="function_calling")
         messages = [
             {"role": "system", "content": _CLARITY_SYSTEM},
             {"role": "user", "content": f"研究查询：{topic}"},
         ]
         try:
             result = await structured.ainvoke(messages)
-            return {"is_clear": result.is_clear, "clarifying_question": result.clarifying_question}
+            if result is None:
+                logger.warning("clarity_check_returned_none", topic=topic[:120])
+                return {"is_clear": False, "clarifying_question": None}
+            logger.info(
+                "clarity_check_llm_succeed", topic=topic,
+                is_clear=result.is_clear, unclear_count=len(result.unclear_aspects),
+            )
+            return {
+                "is_clear": result.is_clear,
+                "understood": result.understood,
+                "unclear_aspects": result.unclear_aspects,
+                "clarifying_question": result.clarifying_question,
+            }
         except Exception:
             logger.warning("clarity_check_llm_failed", exc_info=True)
-            return {"is_clear": True, "clarifying_question": ""}
+            return {"is_clear": False, "clarifying_question": None}
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         """
@@ -167,16 +192,23 @@ class PlannerAgent(Agent):
             )
 
         model = get_chat_model("planner", temperature=0.3, max_tokens=2048)
-        structured = model.with_structured_output(PlanOutput, method="json_schema")
+        structured = model.with_structured_output(PlanOutput, method="function_calling")
+        task_id = state.get("task_id")
         try:
             output: PlanOutput = await structured.ainvoke(messages)
         except Exception:
-            logger.error(
-                "planner_llm_failed",
-                task_id=state.get("task_id"),
-                exc_info=True,
+            logger.error("planner_llm_failed", task_id=task_id, exc_info=True)
+            output = None
+
+        if output is None:
+            logger.warning("planner_structured_returned_none", task_id=task_id)
+            output = await _try_prompt_based_plan(model, messages, task_id)
+
+        if output is None:
+            logger.error("planner_both_paths_failed", task_id=task_id)
+            raise RuntimeError(
+                "Planner structured output returned None — model may not support tool_choice"
             )
-            raise
 
         plan = _plan_output_to_dict(output, topic=topic, task_id=state.get("task_id"))
         state["research_plan"] = plan
@@ -193,6 +225,55 @@ class PlannerAgent(Agent):
 
 
 # ── Module-level helpers ────────────────────────────────────────────────
+
+
+async def _try_prompt_based_plan(model, messages, task_id) -> PlanOutput | None:
+    """Fallback: plain LLM call + safe_json_loads for plan generation."""
+    json_instruction = (
+        "\n\n请以纯 JSON 对象回复（不要用 Markdown 代码块包裹），格式如下：\n"
+        '{\n'
+        '  "research_questions": [\n'
+        '    {"id": "q1", "question": "...", "sub_questions": [\n'
+        '      {"id": "q1.1", "question": "...", "priority": 1}\n'
+        '    ]}\n'
+        '  ],\n'
+        '  "search_keywords": [\n'
+        '    {"keyword": "...", "language": "zh"|"en", "priority": 1}\n'
+        '  ],\n'
+        '  "expected_sources": ["web", "arxiv"]\n'
+        '}'
+    )
+    fallback_messages = list(messages)
+    if fallback_messages and fallback_messages[-1]["role"] == "user":
+        fallback_messages[-1] = {
+            **fallback_messages[-1],
+            "content": fallback_messages[-1]["content"] + json_instruction,
+        }
+    try:
+        resp = await model.ainvoke(fallback_messages)
+    except Exception:
+        logger.warning("planner_prompt_based_failed", task_id=task_id, exc_info=True)
+        return None
+
+    content = getattr(resp, "content", "") or ""
+    parsed = safe_json_loads(content)
+    if parsed is None:
+        logger.warning(
+            "planner_prompt_based_json_parse_failed",
+            task_id=task_id,
+            content_preview=content[:300],
+        )
+        return None
+
+    try:
+        return PlanOutput(**parsed)
+    except Exception:
+        logger.warning(
+            "planner_prompt_based_validation_failed",
+            task_id=task_id,
+            exc_info=True,
+        )
+        return None
 
 
 def _plan_output_to_dict(

@@ -65,6 +65,14 @@ class ClarityCheckOutput(BaseModel):
     """Result of the pre-plan clarity check."""
 
     is_clear: bool = True
+    understood: str = Field(
+        default="",
+        description="What the model understands from the topic (Chinese)",
+    )
+    unclear_aspects: list[str] = Field(
+        default_factory=list,
+        description="Specific aspects that are unclear or need narrowing",
+    )
     clarifying_question: str = ""
 
 

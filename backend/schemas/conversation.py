@@ -72,6 +72,11 @@ class PlanActionRequest(BaseModel):
     modifications: str | None = Field(None, description="Required if action=modify")
 
 
+class ClarifyRequest(BaseModel):
+    """Request body for user's clarification response."""
+    response: str = Field(min_length=1, max_length=2000, description="User's clarifying answer")
+
+
 class GapActionRequest(BaseModel):
     """Request body for acting on a gap question."""
     action: Literal["answer", "skip"]

@@ -23,7 +23,7 @@ from sqlalchemy import select
 
 from backend.agents.base import Agent
 from backend.core.database import get_postgres_session
-from backend.tools.llm import get_chat_model
+from backend.tools.llm import get_chat_model, safe_json_loads
 from backend.models.report import Citation, ResearchReport
 from backend.schemas.llm_outputs import WriterOutput
 from backend.utils.logging import get_logger
@@ -95,7 +95,7 @@ class WriterAgent(Agent):
         )
 
         model = get_chat_model("writer", temperature=0.3, max_tokens=6000)
-        structured = model.with_structured_output(WriterOutput, method="json_schema")
+        structured = model.with_structured_output(WriterOutput, method="function_calling")
         messages = [
             {"role": "system", "content": _WRITER_SYSTEM},
             {"role": "user", "content": self._build_prompt(
@@ -107,7 +107,17 @@ class WriterAgent(Agent):
             output: WriterOutput = await structured.ainvoke(messages)
         except Exception:
             logger.error("writer_llm_failed", task_id=task_id_str, exc_info=True)
-            raise
+            output = None
+
+        if output is None:
+            logger.warning("writer_structured_returned_none", task_id=task_id_str)
+            output = await _try_prompt_based_report(model, messages, task_id_str)
+
+        if output is None:
+            # Both paths failed — build a minimal report from the synthesizer
+            # output so the pipeline completes and the user sees something.
+            logger.error("writer_both_paths_failed", task_id=task_id_str)
+            output = _make_fallback_report(synth)
 
         report = self._assemble_report(output, synth, citation_list, id_to_index)
 
@@ -331,3 +341,63 @@ class WriterAgent(Agent):
             citations=len(report["citations"]),
         )
         return report_id
+
+
+# ── Module-level fallback helpers ────────────────────────────────────────
+
+
+async def _try_prompt_based_report(model, messages, task_id_str: str) -> WriterOutput | None:
+    """Fallback: plain LLM call + safe_json_loads for report generation."""
+    json_instruction = (
+        "\n\n请以纯 JSON 对象回复（不要用 Markdown 代码块包裹），格式如下：\n"
+        '{\n'
+        '  "title": "研究报告标题",\n'
+        '  "abstract": "摘要",\n'
+        '  "background": "研究背景",\n'
+        '  "sections": [{"heading": "章节标题", "content": "Markdown 正文", "citation_indices": []}],\n'
+        '  "gap_notes": "研究局限性说明"\n'
+        '}'
+    )
+    fallback_messages = list(messages)
+    if fallback_messages and fallback_messages[-1]["role"] == "user":
+        fallback_messages[-1] = {
+            **fallback_messages[-1],
+            "content": fallback_messages[-1]["content"] + json_instruction,
+        }
+    try:
+        resp = await model.ainvoke(fallback_messages)
+    except Exception:
+        logger.warning("writer_prompt_based_failed", task_id=task_id_str, exc_info=True)
+        return None
+
+    content = getattr(resp, "content", "") or ""
+    parsed = safe_json_loads(content)
+    if parsed is None:
+        logger.warning(
+            "writer_prompt_based_json_parse_failed",
+            task_id=task_id_str,
+            content_preview=content[:300],
+        )
+        return None
+
+    try:
+        return WriterOutput(**parsed)
+    except Exception:
+        logger.warning(
+            "writer_prompt_based_validation_failed",
+            task_id=task_id_str,
+            exc_info=True,
+        )
+        return None
+
+
+def _make_fallback_report(synth: dict) -> WriterOutput:
+    """Build a minimal WriterOutput from synthesizer output when LLM fails."""
+    content = synth.get("synthesized_content") or synth.get("content") or ""
+    return WriterOutput(
+        title="研究报告",
+        abstract=(content[:500] + "…") if len(content) > 500 else content,
+        background="",
+        sections=[{"heading": "研究结果", "content": content, "citation_indices": []}],
+        gap_notes="（报告格式化失败，以下为原始知识整合结果）",
+    )

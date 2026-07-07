@@ -39,6 +39,10 @@ export const useConversationStore = defineStore('conversations', () => {
   const phaseLabel = ref('')
 
   let _abortController: AbortController | null = null
+  let _researchStreamConvId: string | null = null
+  /** When non-null, only SSE events for this conversation are processed.
+   *  Set to null by detachStream() to silence old callbacks. */
+  let _activeStreamConvId: string | null = null
 
   const hasConversations = computed(() => conversations.value.length > 0)
 
@@ -76,9 +80,14 @@ export const useConversationStore = defineStore('conversations', () => {
   }
 
   async function fetchConversation(convId: string) {
-    // Abort any in-flight SSE stream from previous conversation
-    _abortController?.abort()
-    _abortController = null
+    // If there's a detached research stream for a different conversation,
+    // keep it alive — it's running independently on the backend.
+    if (_researchStreamConvId && _researchStreamConvId !== convId && _abortController) {
+      detachStream()
+    } else {
+      _abortController?.abort()
+      _abortController = null
+    }
     // Reset streaming state so thinking indicator disappears
     isStreaming.value = false
     streamingContent.value = ''
@@ -106,9 +115,20 @@ export const useConversationStore = defineStore('conversations', () => {
   }
 
   function sendMessage(convId: string, content: string, parentMessageId?: string) {
-    // Abort any existing stream before starting a new one
-    _abortController?.abort()
-    _abortController = null
+    // If there's an active research stream for a different conversation,
+    // detach it instead of killing it — the pipeline runs independently.
+    if (_researchStreamConvId && _researchStreamConvId !== convId && _abortController) {
+      detachStream()
+    } else {
+      _abortController?.abort()
+      _abortController = null
+    }
+
+    // Track research streams so we can preserve them across navigations
+    _activeStreamConvId = convId
+    if (mode.value === 'research') {
+      _researchStreamConvId = convId
+    }
 
     isStreaming.value = true
     streamingContent.value = ''
@@ -119,6 +139,9 @@ export const useConversationStore = defineStore('conversations', () => {
     _abortController = convApi.sendMessageStream(
       convId, content, parentMessageId ?? null, selectedModel.value, mode.value,
       (event: SSEEvent) => {
+        // If this stream was detached (user navigated away) or another
+        // conversation's stream is now active, silently drop events.
+        if (_activeStreamConvId !== null && _activeStreamConvId !== convId) return
         switch (event.event) {
           case 'message_created':
             messages.value.push({
@@ -179,7 +202,7 @@ export const useConversationStore = defineStore('conversations', () => {
           case 'plan_action': {
             const action = (event.data.action as string) || ''
             const taskId = (event.data.taskId as string) || ''
-            const outlet = (event.data.modify_outlet as string) || ''
+            const outlet = (event.data.modify_outcome as string) || ''
             const planMsg = [...messages.value]
               .reverse()
               .find(m => m.messageType === 'plan_card'
@@ -190,7 +213,7 @@ export const useConversationStore = defineStore('conversations', () => {
               // 'accepted_with_notes' so the card shows the user's focus.
               let nextStatus: string
               if (action === 'accept') {
-                nextStatus = 'accepted'
+                nextStatus = outlet === 'augment' ? 'accepted_with_notes' : 'accepted'
               } else if (action === 'modify') {
                 nextStatus = outlet === 'revise' ? 'revised' : 'accepted_with_notes'
               } else {
@@ -245,12 +268,25 @@ export const useConversationStore = defineStore('conversations', () => {
 
           // Analysis finished — no dedicated card; update the phase label.
           case 'analysis_complete':
-            phaseLabel.value = '分析完成，检测知识缺口'
+            // Push a visible analysis_card so the user sees analysis results
+            // in the chat — not just a phase-label change in the status bar.
+            if (event.data.messageId) {
+              messages.value.push({
+                id: event.data.messageId as string,
+                conversationId: convId,
+                role: 'assistant',
+                content: '',
+                messageType: 'analysis_card',
+                parentMessageId: parentMessageId || null,
+                metadata: event.data as Record<string, unknown>,
+                tokenCount: 0,
+                createdAt: new Date().toISOString(),
+              })
+            }
+            phaseLabel.value = `分析完成，检测到 ${event.data.gapCount || 0} 个知识缺口`
             break
 
           case 'gap_question':
-            // Gap question card persisted by backend via _mirror_pipeline_event.
-            // Frontend renders it inline within the message list.
             if (event.data.messageId) {
               messages.value.push({
                 id: event.data.messageId as string,
@@ -265,6 +301,23 @@ export const useConversationStore = defineStore('conversations', () => {
               })
             }
             phaseLabel.value = `检测到 ${(event.data.gaps as any[])?.length || 0} 个关键知识缺口`
+            break
+
+          case 'clarity_question':
+            if (event.data.messageId) {
+              messages.value.push({
+                id: event.data.messageId as string,
+                conversationId: convId,
+                role: 'assistant',
+                content: event.data.content as string || '',
+                messageType: 'clarifying_question',
+                parentMessageId: parentMessageId || null,
+                metadata: event.data as Record<string, unknown>,
+                tokenCount: 0,
+                createdAt: new Date().toISOString(),
+              })
+            }
+            phaseLabel.value = '等待您澄清研究主题...'
             break
 
           // Final report — backend persisted a report_card message.
@@ -325,11 +378,13 @@ export const useConversationStore = defineStore('conversations', () => {
         error.value = err.message || '流式传输失败'
         isStreaming.value = false
         streamingContent.value = ''
+        _researchStreamConvId = null
         console.error('[store] sendMessage stream error:', err)
       },
       () => {
         isStreaming.value = false
         streamingContent.value = ''
+        _researchStreamConvId = null
         // Update the conversation list to reflect the new message
         fetchConversations()
       },
@@ -337,14 +392,39 @@ export const useConversationStore = defineStore('conversations', () => {
   }
 
   function stopStreaming() {
+    // Research mode: don't abort — the pipeline runs independently on
+    // the backend and persists results to the DB.  Just detach the UI
+    // so navigating away doesn't kill the research.
+    if (mode.value === 'research' && _abortController) {
+      detachStream()
+      return
+    }
+    _activeStreamConvId = null
     _abortController?.abort()
     _abortController = null
+    _researchStreamConvId = null
     isStreaming.value = false
     streamingContent.value = ''
     phaseLabel.value = ''
   }
 
+  /** Detach the SSE callback without killing the HTTP connection.
+   *  The backend keeps running; results land in the DB and can be
+   *  reloaded when the user returns to this conversation. */
+  function detachStream() {
+    _activeStreamConvId = null  // stop old callbacks from pushing to messages
+    isStreaming.value = false
+    streamingContent.value = ''
+    phaseLabel.value = ''
+    // The AbortController and _researchStreamConvId stay alive so
+    // a future sendMessage or explicit stopStreaming can still abort.
+  }
+
   function clearCurrentConversation() {
+    if (mode.value === 'research' && _abortController) {
+      detachStream()
+      return
+    }
     _abortController?.abort()
     _abortController = null
     isStreaming.value = false
@@ -415,6 +495,12 @@ export const useConversationStore = defineStore('conversations', () => {
     selectedModel.value = model
   }
 
+  /** Whether the given conversation has an active (detached) research stream.
+   *  The frontend shows a loading indicator even when returning mid-pipeline. */
+  function hasActiveResearch(convId: string): boolean {
+    return _researchStreamConvId === convId && !!_abortController
+  }
+
   return {
     conversations, currentConversation, messages, loading, error,
     isStreaming, streamingContent, selectedModel,
@@ -425,5 +511,6 @@ export const useConversationStore = defineStore('conversations', () => {
     sendMessage, stopStreaming, clearCurrentConversation,
     actOnPlan, deleteConversation,
     fetchAvailableModels, setSelectedModel,
+    hasActiveResearch,
   }
 })

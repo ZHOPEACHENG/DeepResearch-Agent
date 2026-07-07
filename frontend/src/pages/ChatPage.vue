@@ -3,8 +3,10 @@ import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useConversationStore } from '@/stores/conversations'
 import { useAuthStore } from '@/stores/auth'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import * as convApi from '@/api/conversations'
 import { Cpu, Loading } from '@element-plus/icons-vue'
+import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,16 +20,12 @@ const convId = ref<string | null>(null)
 
 onMounted(async () => {
   await store.fetchAvailableModels()
-  const id = route.params.conversationId as string | undefined
-  if (id) {
-    convId.value = id
-    await store.fetchConversation(id)
-  } else {
-    store.clearCurrentConversation()
-  }
+  // The watch(…, {immediate:true}) below handles initial conversation load
 })
 
-// Cleanup SSE stream on navigation away
+// Cleanup SSE stream on navigation away.
+// Research streams are preserved — they keep running on the backend
+// and persist results to the DB.
 onBeforeUnmount(() => {
   store.stopStreaming()
 })
@@ -37,6 +35,16 @@ watch(() => route.params.conversationId, async (newId) => {
   if (id && id !== convId.value) {
     convId.value = id
     await store.fetchConversation(id)
+    // If this conversation had an active research stream that was
+    // detached (user navigated away mid-pipeline), poll for new
+    // results so the UI catches up without a manual refresh.
+    if (store.hasActiveResearch(id)) {
+      store.isStreaming = true
+      store.phaseLabel = '研究进行中，正在加载最新结果…'
+      await reloadMessages(id)
+      store.isStreaming = false
+      store.phaseLabel = ''
+    }
   } else if (!id) {
     convId.value = null
     store.clearCurrentConversation()
@@ -89,7 +97,11 @@ async function handleRejectPlan(messageId: string) {
   } catch {
     return // user cancelled
   }
-  store.actOnPlan(messageId, 'reject')
+  try {
+    await store.actOnPlan(messageId, 'reject')
+  } catch {
+    ElMessage.error('操作失败，请重试')
+  }
 }
 
 // ── Modify plan dialog (B-plan modify router) ─────────────────────────
@@ -115,10 +127,84 @@ async function submitModify() {
     modifyDialogVisible.value = false
     modifyDialogText.value = ''
   } catch {
+    ElMessage.error('修改计划失败，请重试')
     // Keep dialog open on error so the user can retry without losing text.
   }
 }
 
+
+// ── Clarity response state ────────────────────────────────────────────
+const clarifyText = ref<Record<string, string>>({})
+const clarifySent = ref<Record<string, boolean>>({})
+const clarifyLoading = ref<Record<string, boolean>>({})
+const gapLoading = ref<Record<string, boolean>>({})
+const expandedSections = ref<Record<string, string[]>>({})
+
+async function handleAcceptPlan(messageId: string) {
+  try {
+    await store.actOnPlan(messageId, 'accept')
+  } catch {
+    ElMessage.error('操作失败，请重试')
+  }
+}
+
+async function handleClarifyResponse(msg: { id: string; metadata?: { taskId?: string } }) {
+  const taskId = msg.metadata?.taskId
+  const text = (clarifyText.value[msg.id] || '').trim()
+  if (!taskId || !text) return
+
+  clarifyLoading.value = { ...clarifyLoading.value, [msg.id]: true }
+  try {
+    await convApi.clarifyTask(taskId, text)
+    clarifySent.value = { ...clarifySent.value, [msg.id]: true }
+    clarifyLoading.value = { ...clarifyLoading.value, [msg.id]: false }
+  } catch (e) {
+    console.error('[ChatPage] clarify failed:', e)
+    ElMessage.error('澄清提交失败，请重试')
+    clarifyLoading.value = { ...clarifyLoading.value, [msg.id]: false }
+  }
+}
+
+async function handleGapAction(msg: { id: string; metadata?: { taskId?: string } }, action: 'answer' | 'skip') {
+  const taskId = msg.metadata?.taskId
+  if (!taskId || !convId.value) return
+  gapLoading.value = { ...gapLoading.value, [msg.id]: true }
+  try {
+    await convApi.actOnGap(taskId, action, convId.value)
+    const target = store.messages.find(m => m.id === msg.id)
+    if (target) target.metadata = { ...target.metadata, status: action === 'answer' ? 'answered' : 'skipped' }
+
+    // The graph now runs synchronously — when actOnGap returns the DB is
+    // already updated.  Reload messages to show the new cards immediately.
+    if (convId.value) {
+      await reloadMessages(convId.value)
+    }
+  } catch (e) {
+    console.error('[ChatPage] gap action failed:', e)
+    ElMessage.error('操作失败，请重试')
+  }
+  gapLoading.value = { ...gapLoading.value, [msg.id]: false }
+}
+
+// ── Reload messages from API (used after graph-resume completes) ────────
+async function reloadMessages(convId: string) {
+  try {
+    const result = await convApi.fetchMessages(convId)
+    // Preserve local status flags (gap answered/skipped, clarify sent)
+    const local = new Map<string, Record<string, unknown>>()
+    for (const m of store.messages) {
+      if (m.metadata?.status) local.set(m.id, { status: m.metadata.status } as Record<string, unknown>)
+    }
+    store.messages.splice(0, store.messages.length)
+    for (const m of result.items) {
+      const saved = local.get(m.id)
+      if (saved) m.metadata = { ...m.metadata, ...saved }
+      store.messages.push(m)
+    }
+  } catch (e) {
+    console.error('[ChatPage] reload messages failed:', e)
+  }
+}
 
 // Render an inline-citation marker [N] as a small clickable-looking badge.
 // Full citation popup is Phase 6 (US4); here we just style the marker so
@@ -188,7 +274,7 @@ watch(() => store.messages.length, scrollToBottom)
                 class="plan-actions"
                 v-if="msg.metadata?.status === 'pending_confirmation' || msg.metadata?.status === 'revised'"
               >
-                <el-button type="primary" size="small" @click="store.actOnPlan(msg.id, 'accept')">接受</el-button>
+                <el-button type="primary" size="small" @click="handleAcceptPlan(msg.id)">接受</el-button>
                 <el-button size="small" @click="openModifyDialog(msg.id)">修改</el-button>
                 <el-button size="small" type="danger" @click="handleRejectPlan(msg.id)">拒绝</el-button>
               </div>
@@ -213,9 +299,7 @@ watch(() => store.messages.length, scrollToBottom)
             <el-icon :size="18"><Cpu /></el-icon>
           </el-avatar>
           <div class="msg-bubble-wrapper">
-            <div class="msg-bubble ai-bubble" v-if="msg.messageType === 'text'">
-              {{ msg.content }}
-            </div>
+            <div class="msg-bubble ai-bubble markdown-body" v-if="msg.messageType === 'text'" v-html="renderMarkdown(String(msg.content))"></div>
             <!-- Plan card -->
             <div class="msg-card plan" v-else-if="msg.messageType === 'plan_card'">
               <h4>研究计划</h4>
@@ -246,7 +330,7 @@ watch(() => store.messages.length, scrollToBottom)
                 class="plan-actions"
                 v-if="msg.metadata?.status === 'pending_confirmation' || msg.metadata?.status === 'revised'"
               >
-                <el-button type="primary" size="small" @click="store.actOnPlan(msg.id, 'accept')">接受</el-button>
+                <el-button type="primary" size="small" @click="handleAcceptPlan(msg.id)">接受</el-button>
                 <el-button size="small" @click="openModifyDialog(msg.id)">修改</el-button>
                 <el-button size="small" type="danger" @click="handleRejectPlan(msg.id)">拒绝</el-button>
               </div>
@@ -298,30 +382,106 @@ watch(() => store.messages.length, scrollToBottom)
                 </el-collapse-item>
               </el-collapse>
             </div>
+            <!-- Analysis result card -->
+            <div
+              class="msg-card analysis"
+              v-else-if="msg.messageType === 'analysis_card'"
+            >
+              <h4>知识整合 · 第 {{ msg.metadata?.round || 1 }} 轮</h4>
+              <div class="analysis-stats" style="display:flex; gap:12px; margin:8px 0">
+                <el-tag type="warning" size="small">知识缺口: {{ msg.metadata?.gapCount || msg.metadata?.gap_count || 0 }}</el-tag>
+                <el-tag v-if="msg.metadata?.criticalCount || msg.metadata?.critical_count" type="danger" size="small">严重缺口: {{ msg.metadata?.criticalCount || msg.metadata?.critical_count }}</el-tag>
+              </div>
+              <div v-if="msg.metadata?.summaryPreview || msg.metadata?.summary_preview" class="analysis-preview" style="margin-top:8px; opacity:0.8; max-height:120px; overflow:hidden">
+                <p style="font-size:13px; white-space:pre-wrap">{{ msg.metadata?.summaryPreview || msg.metadata?.summary_preview }}</p>
+              </div>
+            </div>
+            <!-- Clarifying question -->
+            <div
+              class="msg-card clarifying"
+              v-else-if="msg.messageType === 'clarifying_question'"
+            >
+              <h4>让我们澄清一下研究主题</h4>
+              <p>{{ msg.content }}</p>
+              <div class="clarify-input" v-if="!clarifySent[msg.id] && msg.metadata?.status !== 'clarified'">
+                <el-input
+                  v-model="clarifyText[msg.id]"
+                  size="small"
+                  placeholder="在这里输入更具体的主题..."
+                  :disabled="!!clarifyLoading[msg.id]"
+                />
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="!!clarifyLoading[msg.id]"
+                  :disabled="!clarifyText[msg.id]"
+                  @click="handleClarifyResponse(msg)"
+                  style="margin-top:6px"
+                >提交</el-button>
+              </div>
+              <el-tag v-else type="success" size="small" style="margin-top:8px">
+                已澄清，正在继续研究...
+              </el-tag>
+            </div>
+            <!-- Gap question card -->
+            <div
+              class="msg-card gap"
+              v-else-if="msg.messageType === 'gap_question'"
+            >
+              <h4>知识缺口 · 第 {{ msg.metadata?.round || 1 }} 轮</h4>
+              <p class="gap-hint">以下问题暂未找到充分资料，是否补充检索？</p>
+              <ul v-if="Array.isArray(msg.metadata?.gaps)" class="gap-list">
+                <li v-for="(g, gidx) in (msg.metadata?.gaps as any[])" :key="gidx">
+                  <el-tag :type="g.severity === 'critical' ? 'danger' : 'warning'" size="small" style="margin-right:6px">{{ g.severity }}</el-tag>
+                  <span>{{ g.description }}</span>
+                </li>
+              </ul>
+              <div class="gap-actions" v-if="msg.metadata?.status === 'pending'">
+                <el-button type="primary" size="small" :disabled="!!gapLoading[msg.id]" :loading="!!gapLoading[msg.id]" @click="handleGapAction(msg, 'answer')">补充检索</el-button>
+                <el-button size="small" :disabled="!!gapLoading[msg.id]" @click="handleGapAction(msg, 'skip')">跳过</el-button>
+              </div>
+              <el-tag v-else-if="msg.metadata?.status === 'answered'" type="success" size="small" style="margin-top:8px">已补充检索</el-tag>
+              <el-tag v-else-if="msg.metadata?.status === 'skipped'" type="info" size="small" style="margin-top:8px">已跳过</el-tag>
+            </div>
             <!-- Report card -->
             <div class="msg-card report" v-else-if="msg.messageType === 'report_card'">
-              <h4>{{ msg.metadata?.title || '研究报告' }}</h4>
-              <p v-if="msg.metadata?.abstract" class="report-abstract">
-                {{ msg.metadata?.abstract }}
-              </p>
-              <el-collapse
+              <div class="report-header">
+                <h4>{{ msg.metadata?.title || '研究报告' }}</h4>
+              </div>
+              <div
+                v-if="msg.metadata?.abstract"
+                class="report-abstract markdown-body"
+                v-html="renderMarkdown(String(msg.metadata?.abstract))"
+              ></div>
+              <div
                 v-if="Array.isArray(msg.metadata?.sections) && (msg.metadata?.sections as any[]).length"
+                class="report-sections"
               >
-                <el-collapse-item
-                  v-for="(section, sidx) in (msg.metadata?.sections as any[])"
-                  :key="sidx"
-                  :title="section.heading"
-                  :name="`${msg.id}-${sidx}`"
-                >
-                  <div class="report-section-content">{{ section.content }}</div>
-                </el-collapse-item>
-              </el-collapse>
+                <el-collapse v-model="expandedSections[msg.id]">
+                  <el-collapse-item
+                    v-for="(section, sidx) in (msg.metadata?.sections as any[])"
+                    :key="sidx"
+                    :name="`${msg.id}-${sidx}`"
+                  >
+                    <template #title>
+                      <span class="section-heading">{{ section.heading }}</span>
+                    </template>
+                    <div
+                      class="report-section-content markdown-body"
+                      v-html="renderMarkdown(String(section.content))"
+                    ></div>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
               <div
                 v-if="msg.metadata?.gap_notes"
                 class="report-gap-notes"
               >
                 <h5>知识缺口说明</h5>
-                <pre style="white-space:pre-wrap">{{ msg.metadata?.gap_notes }}</pre>
+                <div
+                  class="markdown-body"
+                  v-html="renderMarkdown(String(msg.metadata?.gap_notes))"
+                ></div>
               </div>
               <div
                 v-if="Array.isArray(msg.metadata?.citations) && (msg.metadata?.citations as any[]).length"
@@ -640,16 +800,42 @@ watch(() => store.messages.length, scrollToBottom)
 .source-title {
   color: #409eff;
 }
+.report-header h4 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: #1d2129;
+}
 .report-abstract {
-  color: #606266;
-  font-size: 13px;
-  line-height: 1.6;
-  margin: 0 0 8px;
+  color: #4e5969;
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0 0 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e5e6eb;
+}
+.report-sections {
+  margin: 12px 0;
+}
+.report-sections :deep(.el-collapse-item__header) {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1d2129;
+  height: auto;
+  line-height: 1.5;
+  padding: 10px 0;
+}
+.report-sections :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+}
+.section-heading {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .report-section-content {
-  white-space: pre-wrap;
-  font-size: 13px;
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 1.8;
 }
 .report-gap-notes {
   margin-top: 12px;
@@ -668,6 +854,92 @@ watch(() => store.messages.length, scrollToBottom)
   font-size: 12px;
   color: #606266;
   line-height: 1.7;
+}
+
+/* ── Markdown Body ──────────────────────────────────────────────────── */
+.markdown-body {
+  color: #1d2129;
+  line-height: 1.8;
+  word-break: break-word;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  margin: 16px 0 8px;
+  font-weight: 600;
+  color: #1d2129;
+}
+.markdown-body h1 { font-size: 1.4em; }
+.markdown-body h2 { font-size: 1.25em; border-bottom: 1px solid #e5e6eb; padding-bottom: 4px; }
+.markdown-body h3 { font-size: 1.1em; }
+.markdown-body h4 { font-size: 1.05em; }
+.markdown-body p {
+  margin: 0 0 10px;
+}
+.markdown-body ul, .markdown-body ol {
+  padding-left: 24px;
+  margin: 6px 0 12px;
+}
+.markdown-body li {
+  margin: 2px 0;
+}
+.markdown-body blockquote {
+  border-left: 3px solid #409eff;
+  padding: 4px 12px;
+  margin: 8px 0;
+  color: #606266;
+  background: #f0f5ff;
+  border-radius: 0 4px 4px 0;
+}
+.markdown-body code {
+  background: #f2f3f5;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  color: #e74c3c;
+}
+.markdown-body pre {
+  background: #1d2129;
+  color: #e8e8e8;
+  padding: 12px 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 8px 0 16px;
+}
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.markdown-body strong {
+  font-weight: 600;
+  color: #1d2129;
+}
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 16px;
+  font-size: 13px;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid #e5e6eb;
+  padding: 8px 12px;
+  text-align: left;
+}
+.markdown-body th {
+  background: #f5f7fa;
+  font-weight: 600;
+}
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid #e5e6eb;
+  margin: 16px 0;
+}
+.markdown-body a {
+  color: #409eff;
 }
 
 /* ── Input Area ───────────────────────────────────────────────────── */

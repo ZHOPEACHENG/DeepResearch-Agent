@@ -28,6 +28,7 @@ from backend.schemas.conversation import (
     ConversationUpdate,
     MessageListResponse,
     MessageRead,
+    ClarifyRequest,
     GapActionRequest,
     PlanActionRequest,
     SendMessageRequest,
@@ -302,6 +303,25 @@ async def plan_action(
     return {"status": "ok", "action": body.action}
 
 
+# ── Clarity response ──────────────────────────────────────────────────
+
+
+@router.post("/research/{task_id}/clarify")
+async def clarity_response(
+    task_id: str,
+    body: ClarifyRequest,
+    current_user: User = Depends(get_current_active_user),
+):
+    """User replies to a clarifying question within the same research task."""
+    logger.info(
+        "api_clarify_response",
+        task_id=task_id,
+        user_id=str(current_user.id),
+    )
+    await chat_service.set_clarity_response(task_id, body.response)
+    return {"status": "ok", "taskId": task_id}
+
+
 # ── Gap Action ──────────────────────────────────────────────────────────
 
 
@@ -311,18 +331,53 @@ async def gap_action(
     body: GapActionRequest,
     current_user: User = Depends(get_current_active_user),
 ):
-    """Answer or skip a knowledge gap question."""
+    """Answer or skip a knowledge gap question.
+
+    Blocks until the resumed graph completes so the caller can immediately
+    reload messages and see the new cards.  The ownership check on the
+    conversation prevents users from acting on other users' tasks.
+    """
+    if not body.conversation_id:
+        raise HTTPException(status_code=400, detail="缺少 conversation_id")
+
+    # Verify ownership
+    try:
+        await conversation_service.get_conversation(
+            body.conversation_id, current_user.id,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
     logger.info(
         "api_gap_action",
         task_id=task_id,
         user_id=str(current_user.id),
+        conv_id=str(body.conversation_id),
         action=body.action,
     )
-    if not body.conversation_id:
-        raise HTTPException(status_code=400, detail="缺少 conversation_id")
-    asyncio.create_task(
-        chat_service.resume_gap_action(body.conversation_id, task_id, body.action)
-    )
+    # Persist the gap_question status so it survives page reloads
+    try:
+        from backend.services.chat_service import _update_message_status_by_task
+        await _update_message_status_by_task(
+            task_id,
+            "gap_question",
+            "answered" if body.action == "answer" else "skipped",
+        )
+    except Exception:
+        pass  # best-effort; the graph resume is the priority
+    try:
+        await chat_service.resume_gap_action(body.conversation_id, task_id, body.action)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        logger.error(
+            "api_gap_action_failed",
+            task_id=task_id,
+            conv_id=str(body.conversation_id),
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="补充检索执行失败，请重试")
+
     return {"status": "ok", "action": body.action}
 
 

@@ -65,6 +65,29 @@ export async function actOnPlan(
   return data
 }
 
+export async function clarifyTask(
+  taskId: string, response: string,
+): Promise<{ status: string; taskId: string }> {
+  const { data } = await apiClient.post<{ status: string; taskId: string }>(
+    `/conversations/research/${taskId}/clarify`,
+    { response },
+  )
+  return data
+}
+
+export async function actOnGap(
+  taskId: string, action: 'answer' | 'skip', conversationId: string,
+): Promise<{ status: string; action: string }> {
+  // Gap resume runs the full graph (retriever → analyzer → … → writer),
+  // which can take 2+ minutes.  Override the default 30 s timeout.
+  const { data } = await apiClient.post<{ status: string; action: string }>(
+    `/conversations/research/${taskId}/gap-action`,
+    { action, conversation_id: conversationId },
+    { timeout: 300_000 },  // 5 minutes
+  )
+  return data
+}
+
 /**
  * SSE streaming — send a message and receive streaming events.
  *
@@ -103,6 +126,7 @@ export function sendMessageStream(
     const decoder = new TextDecoder()
     let buffer = ''
 
+    let eventType = ''
     try {
       while (true) {
         const { done, value } = await reader.read()
@@ -110,7 +134,6 @@ export function sendMessageStream(
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
-        let eventType = ''
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             eventType = line.slice(7).trim()

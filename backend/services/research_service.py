@@ -121,6 +121,7 @@ async def _retriever_node(state: ResearchState) -> dict[str, Any]:
     return {
         "retrieval_results": result.get("retrieval_results", []),
         "all_retrieval_results": result.get("all_retrieval_results", []),
+        "analysis_round": result.get("analysis_round", state.get("analysis_round", 1)),
     }
 
 
@@ -138,6 +139,7 @@ async def _analyzer_node(state: ResearchState) -> dict[str, Any]:
     return {
         "knowledge_summary": result.get("knowledge_summary"),
         "knowledge_gaps": result.get("knowledge_gaps", []),
+        "analysis_round": result.get("analysis_round", state.get("analysis_round", 1)),
     }
 
 
@@ -198,7 +200,19 @@ async def _writer_node(state: ResearchState) -> dict[str, Any]:
 def _route_after_analyze(state: ResearchState) -> Literal["gap_confirm", "synthesizer"]:
     gaps = state.get("knowledge_gaps") or []
     analysis_round = state.get("analysis_round", 1)
-    critical = [g for g in gaps if g.get("severity") == "critical" and g.get("suggested_query")]
+    # Filter to gaps that are both critical AND actionable (have a suggested_query).
+    # For critical gaps that lack a suggested_query, fall back to using the
+    # gap description as a query so the user still sees them in the gap_confirm card.
+    critical: list[dict] = []
+    for g in gaps:
+        if not g.get("severity") == "critical":
+            continue
+        if not g.get("suggested_query"):
+            # Patch in a fallback query so the gap card still shows up.
+            desc = g.get("description", "") or "unknown gap"
+            g["suggested_query"] = desc[:200]
+        if isinstance(g, dict):
+            critical.append(g)
     if critical and analysis_round < settings.max_gap_rounds:
         return "gap_confirm"
     return "synthesizer"
@@ -309,7 +323,7 @@ async def classify_modification(
 
     from backend.schemas.llm_outputs import ModificationClassifyOutput
     model = get_chat_model("default", temperature=0.0, max_tokens=32)
-    structured = model.with_structured_output(ModificationClassifyOutput, method="json_schema")
+    structured = model.with_structured_output(ModificationClassifyOutput, method="function_calling")
     messages = [
         {"role": "system", "content": (
             'You classify a user modification to a research plan. '

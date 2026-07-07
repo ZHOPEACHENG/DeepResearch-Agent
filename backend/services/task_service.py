@@ -225,14 +225,14 @@ async def create_task(
         ValueError: If topic is too short.
     """
     stripped = topic.strip()
-    if len(stripped) < 10:
+    if len(stripped) < 5:
         logger.warning(
             "task_create_topic_too_short",
             user_id=str(user_id),
             length=len(stripped),
         )
         raise ValueError(
-            f"研究主题至少需要 10 个字符（当前 {len(stripped)} 个）"
+            f"研究主题至少需要 5 个字符（当前 {len(stripped)} 个）"
         )
 
     task = ResearchTask(

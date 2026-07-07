@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     max_content_length: int = 50000        # Max chars of webpage content before summarization
     max_context_tokens: int = 128000       # Max tokens kept in conversation context window
     available_models: list[str] = ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4-6", "claude-opus-4-8"]
+    base_url: str = ""
 
     # Per-agent model overrides — fall back to llm_model when None
     planner_model: str | None = None

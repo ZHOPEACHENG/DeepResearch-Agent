@@ -17,7 +17,7 @@ from typing import Any
 from backend.agents.base import Agent
 from backend.schemas.llm_outputs import AnalyzerOutput
 from backend.services import task_service
-from backend.tools.llm import get_chat_model
+from backend.tools.llm import get_chat_model, safe_json_loads
 from backend.utils.datetime import now_iso
 from backend.utils.logging import get_logger
 from backend.utils.state import coerce_citation_map, conv_id
@@ -94,23 +94,36 @@ class AnalyzerAgent(Agent):
             state["knowledge_gaps"] = gaps
             return state
 
-        model = get_chat_model("analyzer", temperature=0.2, max_tokens=4096)
-        structured = model.with_structured_output(AnalyzerOutput, method="json_schema")
+        model = get_chat_model("analyzer", temperature=0.2, max_tokens=8192)
+        structured = model.with_structured_output(AnalyzerOutput, method="function_calling")
         prompt = self._build_initial_prompt(questions, initial_results)
         messages = [
             {"role": "system", "content": _ANALYZER_SYSTEM},
             {"role": "user", "content": prompt},
         ]
 
-        try:
-            output: AnalyzerOutput = await structured.ainvoke(messages)
-        except Exception:
-            logger.error("analyzer_llm_failed", task_id=task_id_str, exc_info=True)
-            raise
+        output: AnalyzerOutput | None = await self._try_structured_output(
+            structured, messages, task_id_str,
+        )
+        if output is None:
+            output = await self._try_prompt_based_output(
+                model, messages, task_id_str,
+            )
 
         analysis_round = int(state.get("analysis_round", 1) or 1)
-        summary = self._build_summary(output, task_id_str, state)
-        gaps = self._build_gaps(output, task_id_str, state, analysis_round)
+        if output is None:
+            # Both paths failed — return empty summary so the pipeline
+            # can still reach gap_confirm and let the user decide.
+            logger.error(
+                "analyzer_both_paths_failed",
+                task_id=task_id_str,
+            )
+            summary, gaps = self._empty_summary_with_gaps(
+                task_id_str, questions, conv_id(state),
+            )
+        else:
+            summary = self._build_summary(output, task_id_str, state)
+            gaps = self._build_gaps(output, task_id_str, state, analysis_round)
 
         # ── Persist to MongoDB (best-effort) ──
         try:
@@ -139,6 +152,87 @@ class AnalyzerAgent(Agent):
         )
         return state
 
+    # ── Dual-path LLM call ─────────────────────────────────────────────
+
+    async def _try_structured_output(
+        self, structured, messages: list[dict], task_id_str: str,
+    ) -> AnalyzerOutput | None:
+        """Attempt structured output via function_calling.
+
+        Returns ``None`` when the model ignores the tool_choice (common with
+        DeepSeek models that silently drop tool calls instead of erroring).
+
+        Uses ``include_raw=True`` internally so that even on parse failure we
+        can log the raw model response for debugging.
+        """
+        try:
+            result = await structured.ainvoke(messages)
+        except Exception:
+            logger.warning(
+                "analyzer_structured_failed",
+                task_id=task_id_str,
+                exc_info=True,
+            )
+            return None
+        if result is None:
+            logger.warning(
+                "analyzer_structured_returned_none",
+                task_id=task_id_str,
+                prompt_chars=sum(len(m.get("content", "")) for m in messages),
+            )
+        return result
+
+    async def _try_prompt_based_output(
+        self, model, messages: list[dict], task_id_str: str,
+    ) -> AnalyzerOutput | None:
+        """Fallback: plain LLM call + safe_json_loads.
+
+        Appends a JSON-format instruction to the last message so the model
+        knows to output pure JSON instead of free text.
+        """
+        json_instruction = (
+            "\n\n请以纯 JSON 对象回复（不要用 Markdown 代码块包裹），"
+            "包含以下字段：summary_content（字符串，Markdown 格式的知识摘要）、"
+            "citation_map（对象，键为 chunk_N，值为 result_id 数组）、"
+            "knowledge_gaps（数组，每项含 related_question_id、description、"
+            "severity（critical/moderate/minor）、suggested_query）。"
+        )
+        fallback_messages = list(messages)
+        if fallback_messages and fallback_messages[-1]["role"] == "user":
+            fallback_messages[-1] = {
+                **fallback_messages[-1],
+                "content": fallback_messages[-1]["content"] + json_instruction,
+            }
+        try:
+            resp = await model.ainvoke(fallback_messages)
+        except Exception:
+            logger.warning(
+                "analyzer_prompt_based_failed",
+                task_id=task_id_str,
+                exc_info=True,
+            )
+            return None
+
+        content = getattr(resp, "content", "") or ""
+        parsed = safe_json_loads(content)
+        if parsed is None:
+            logger.warning(
+                "analyzer_prompt_based_json_parse_failed",
+                task_id=task_id_str,
+                content_preview=content[:300],
+            )
+            return None
+
+        try:
+            return AnalyzerOutput(**parsed)
+        except Exception:
+            logger.warning(
+                "analyzer_prompt_based_validation_failed",
+                task_id=task_id_str,
+                exc_info=True,
+            )
+            return None
+
     # ── Helpers ──────────────────────────────────────────────────────
 
     def _question_lines(self, plan: dict[str, Any]) -> list[str]:
@@ -160,7 +254,7 @@ class AnalyzerAgent(Agent):
                     out.append(f"  {sid}: {stext}")
         return out
 
-    _MAX_PROMPT_CHARS = 24000
+    _MAX_PROMPT_CHARS = 10000
 
     def _build_initial_prompt(
         self, questions: list[str], results: list[dict],

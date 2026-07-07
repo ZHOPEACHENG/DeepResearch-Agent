@@ -303,6 +303,29 @@ async def get_message_conversation_id(msg_id: uuid.UUID) -> uuid.UUID:
         return conv_id
 
 
+async def update_message_metadata(
+    message_id: uuid.UUID, metadata_update: dict,
+) -> None:
+    """Merge new keys into a message's extra (metadata) JSONB column."""
+    session = get_postgres_session()
+    async with session:
+        result = await session.execute(
+            select(Message).where(Message.id == message_id)
+        )
+        msg = result.scalar_one_or_none()
+        if msg is None:
+            raise ValueError(f"消息 {message_id} 不存在")
+        current = dict(msg.extra or {})
+        current.update(metadata_update)
+        msg.extra = current
+        await session.commit()
+        logger.info(
+            "message_metadata_updated",
+            message_id=str(message_id),
+            keys=list(metadata_update.keys()),
+        )
+
+
 async def get_messages(
     conversation_id: uuid.UUID,
     *,

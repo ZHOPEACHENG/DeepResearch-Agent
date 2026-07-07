@@ -34,7 +34,7 @@ from langchain.chat_models import init_chat_model
 from langchain.embeddings import init_embeddings
 
 from backend.core.config import settings
-
+from langchain_deepseek import ChatDeepSeek
 
 def _resolve_model(name: str) -> str:
     """Map a logical agent name to a concrete model string.
@@ -53,7 +53,6 @@ def _resolve_model(name: str) -> str:
     return settings.llm_model
 
 
-@lru_cache(maxsize=8)
 def get_chat_model(
     name: str = "default",
     *,
@@ -74,7 +73,7 @@ def get_chat_model(
         A LangChain ``BaseChatModel`` instance.
     """
     model = model_override or _resolve_model(name)
-    return init_chat_model(
+    chat_model = init_chat_model(
         model,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -82,6 +81,30 @@ def get_chat_model(
         timeout=120.0,
         request_timeout=120.0,
     )
+
+    # DeepSeek 推理模型默认开启思考模式，思考模式拒绝 tool_choice。
+    # function_calling 依靠 tool_choice，所以必须关闭思考。
+    if isinstance(chat_model, ChatDeepSeek):
+        chat_model.extra_body = {"thinking": {"type": "disabled"}}
+
+        # DeepSeek API 对 dict 形式的 tool_choice
+        # （如 {"type":"function","function":{"name":"AnalyzerOutput"}}）支持不稳定，
+        # 有时会忽略并返回纯文本 → with_structured_output 返回 None。
+        # "required" 字符串形式更可靠，且只绑定一个工具时效果完全相同。
+        _orig_get_request_payload = chat_model._get_request_payload
+
+        def _patched_get_request_payload(
+            input_, *, stop=None, **kwargs,
+        ) -> dict:
+            payload = _orig_get_request_payload(input_, stop=stop, **kwargs)
+            tc = payload.get("tool_choice")
+            if isinstance(tc, dict):
+                payload["tool_choice"] = "required"
+            return payload
+
+        chat_model._get_request_payload = _patched_get_request_payload  # type: ignore[method-assign]
+
+    return chat_model
 
 
 @lru_cache(maxsize=1)
@@ -104,6 +127,9 @@ def safe_json_loads(text: str) -> dict | None:
     sentences.  This strips fences, then trims to the outermost ``{ ... }``
     object so a stray trailing sentence does not break parsing.
 
+    When output is truncated (model hit max_tokens), missing closing brackets
+    are repaired before parsing.
+
     For new code prefer ``model.with_structured_output(PydanticModel)`` —
     it guarantees valid JSON at the API level.
 
@@ -121,10 +147,49 @@ def safe_json_loads(text: str) -> dict | None:
     except json.JSONDecodeError:
         pass
     # Fall back to slicing between the first { and the last }.
-    start, end = s.find("{"), s.rfind("}")
-    if start != -1 and end != -1 and end > start:
+    start = s.find("{")
+    if start == -1:
+        return None
+    end = s.rfind("}")
+    if end != -1 and end > start:
         try:
             return json.loads(s[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+    # Final fallback: repair truncated JSON by closing unmatched brackets.
+    # Use a stack so closes happen in correct reverse order: inner objects
+    # first, then arrays, then outer objects.
+    candidate = s[start:]
+    bracket_stack: list[str] = []
+    in_string = False
+    escape = False
+    for ch in candidate:
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            bracket_stack.append('}')
+        elif ch == '}':
+            if bracket_stack and bracket_stack[-1] == '}':
+                bracket_stack.pop()
+        elif ch == '[':
+            bracket_stack.append(']')
+        elif ch == ']':
+            if bracket_stack and bracket_stack[-1] == ']':
+                bracket_stack.pop()
+    if bracket_stack:
+        candidate += ''.join(reversed(bracket_stack))
+    if candidate != s[start:]:
+        try:
+            return json.loads(candidate)
         except json.JSONDecodeError:
             return None
     return None
