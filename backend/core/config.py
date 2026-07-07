@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     available_models: list[str] = ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4-6", "claude-opus-4-8"]
     base_url: str = ""
 
+    # Deep thinking — when enabled, reasoning models keep their thinking
+    # mode active.  WARNING: thinking mode rejects tool_choice, so agents
+    # using with_structured_output() (planner, analyzer, writer, …) may
+    # fail.  Only enable for chat / free-form generation tasks.
+    llm_deep_thinking: bool = False
+
     # Per-agent model overrides — fall back to llm_model when None
     planner_model: str | None = None
     analyzer_model: str | None = None
