@@ -1,14 +1,20 @@
 import { marked } from 'marked'
 
 /** Render markdown to HTML.  GFM tables, strikethrough, and line-break
- *  conversion are enabled.  The output is used with v-html — NEVER pass
- *  untrusted user input directly. */
+ *  conversion are enabled.  Citation markers [1], [2,3], [1-3] are
+ *  converted into clickable span elements. */
 export function renderMarkdown(text: string): string {
   if (!text) return ''
   try {
-    return marked.parse(text, { breaks: true, gfm: true }) as string
+    let html = marked.parse(text, { breaks: true, gfm: true }) as string
+    // Convert citation markers to clickable spans so the CitationPopup
+    // can wire up click handlers via event delegation.
+    html = html.replace(
+      /\[(\d+(?:[-,]\d+)*)\]/g,
+      '<span class="cite-marker" data-cite="$1">[$1]</span>',
+    )
+    return html
   } catch {
-    // Fall back to escaped plain text if markdown parsing fails
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   }
 }

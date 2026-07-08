@@ -397,12 +397,12 @@ export const useConversationStore = defineStore('conversations', () => {
     // so navigating away doesn't kill the research.
     if (mode.value === 'research' && _abortController) {
       detachStream()
-      return
+    } else {
+      _activeStreamConvId = null
+      _abortController?.abort()
+      _abortController = null
+      _researchStreamConvId = null
     }
-    _activeStreamConvId = null
-    _abortController?.abort()
-    _abortController = null
-    _researchStreamConvId = null
     isStreaming.value = false
     streamingContent.value = ''
     phaseLabel.value = ''
@@ -421,12 +421,16 @@ export const useConversationStore = defineStore('conversations', () => {
   }
 
   function clearCurrentConversation() {
+    // For research mode, detach the SSE stream (keep it alive on the
+    // backend) but still clear the UI state so the new conversation
+    // shows a blank page.
     if (mode.value === 'research' && _abortController) {
       detachStream()
-      return
+    } else {
+      _abortController?.abort()
+      _abortController = null
+      _researchStreamConvId = null
     }
-    _abortController?.abort()
-    _abortController = null
     isStreaming.value = false
     currentConversation.value = null
     messages.value = []

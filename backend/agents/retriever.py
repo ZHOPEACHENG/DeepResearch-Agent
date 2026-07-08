@@ -34,6 +34,7 @@ from backend.tools.search import (
     WebSearchSource,
     get_search_sources,
     normalize_url,
+    score_credibility,
 )
 from backend.utils.datetime import now_iso
 from backend.utils.logging import get_logger
@@ -131,6 +132,11 @@ class RetrieverAgent(Agent):
             per_source_counts[name] = len(results)
 
         deduped = self._dedup(gathered)[:_MAX_RESULTS_PER_ROUND]
+
+        # Assign credibility scores (T090) before enrichment
+        for r in deduped:
+            if r.credibility in ("unknown", ""):
+                r.credibility = score_credibility(r)
 
         round_number = int(state.get("analysis_round", 1) or 1)
 

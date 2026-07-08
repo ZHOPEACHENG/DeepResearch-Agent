@@ -140,6 +140,36 @@ const clarifyLoading = ref<Record<string, boolean>>({})
 const gapLoading = ref<Record<string, boolean>>({})
 const expandedSections = ref<Record<string, string[]>>({})
 
+// ── Citation popup state (Phase 6: US4) ────────────────────────────────
+const citePopupVisible = ref(false)
+const citePopupDetail = ref<Record<string, unknown> | null>(null)
+const citePopupLoading = ref(false)
+const citePopupPosition = ref({ x: 0, y: 0 })
+
+import { getCitationDetail } from '@/api/research'
+
+async function handleCiteClick(event: MouseEvent, msg: { metadata?: Record<string, unknown> }) {
+  const target = event.target as HTMLElement | null
+  const marker = target?.closest?.('.cite-marker') as HTMLElement | null
+  if (!marker) return
+  const indices = marker.dataset.cite || ''
+  const firstIdx = parseInt(indices.split(/[,-]/)[0], 10)
+  if (!firstIdx) return
+  const reportId = (msg.metadata?.report_id || msg.metadata?.reportId) as string
+  if (!reportId) return
+
+  citePopupLoading.value = true
+  citePopupPosition.value = { x: event.clientX, y: event.clientY }
+  citePopupVisible.value = true
+  try {
+    const detail = await getCitationDetail(reportId, firstIdx)
+    citePopupDetail.value = detail as unknown as Record<string, unknown>
+  } catch {
+    citePopupDetail.value = { index: firstIdx, text: '无法加载引用详情' }
+  }
+  citePopupLoading.value = false
+}
+
 async function handleAcceptPlan(messageId: string) {
   try {
     await store.actOnPlan(messageId, 'accept')
@@ -284,7 +314,11 @@ watch(() => store.messages.length, scrollToBottom)
               >已采纳补充：{{ msg.metadata?.user_focus_notes || '' }}</el-tag>
             </div>
             <!-- Report card -->
-            <div class="msg-card report" v-else-if="msg.messageType === 'report_card'">
+            <div
+              class="msg-card report"
+              v-else-if="msg.messageType === 'report_card'"
+              @click="handleCiteClick($event, msg)"
+            >
               <p>研究报告已生成</p>
             </div>
           </div>
@@ -444,7 +478,11 @@ watch(() => store.messages.length, scrollToBottom)
               <el-tag v-else-if="msg.metadata?.status === 'skipped'" type="info" size="small" style="margin-top:8px">已跳过</el-tag>
             </div>
             <!-- Report card -->
-            <div class="msg-card report" v-else-if="msg.messageType === 'report_card'">
+            <div
+              class="msg-card report"
+              v-else-if="msg.messageType === 'report_card'"
+              @click="handleCiteClick($event, msg)"
+            >
               <div class="report-header">
                 <h4>{{ msg.metadata?.title || '研究报告' }}</h4>
               </div>
@@ -498,7 +536,20 @@ watch(() => store.messages.length, scrollToBottom)
                       :type="credibilityTagType(cite.credibility)"
                       style="margin-right:6px"
                     >{{ cite.credibility }}</el-tag>
-                    <span>{{ cite.text }}</span>
+                    <el-tag
+                      v-if="cite.sourceType"
+                      size="small"
+                      type="info"
+                      style="margin-right:6px"
+                    >{{ cite.sourceType }}</el-tag>
+                    <a
+                      v-if="cite.url"
+                      :href="cite.url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="source-title"
+                    >{{ cite.title || cite.url }}</a>
+                    <span v-else class="source-title">{{ cite.title || cite.text }}</span>
                   </li>
                 </ol>
               </div>
@@ -619,6 +670,61 @@ watch(() => store.messages.length, scrollToBottom)
         >确认修改</el-button>
       </template>
     </el-dialog>
+
+    <!-- Citation popup (Phase 6: US4) -->
+    <teleport to="body">
+      <div
+        v-if="citePopupVisible"
+        class="cite-popup-overlay"
+        @click.self="citePopupVisible = false"
+      >
+        <div
+          class="cite-popup"
+          :style="{ left: citePopupPosition.x + 'px', top: citePopupPosition.y + 'px' }"
+        >
+          <div class="cite-popup-header">
+            <span>引用 #{{ citePopupDetail?.index }}</span>
+            <el-button size="small" text @click="citePopupVisible = false">✕</el-button>
+          </div>
+          <div v-if="citePopupLoading" class="cite-popup-loading">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            <span>加载中…</span>
+          </div>
+          <div v-else-if="citePopupDetail" class="cite-popup-body">
+            <div class="cite-source-title">{{ (citePopupDetail.source as any)?.title || citePopupDetail.text }}</div>
+            <el-tag
+              size="small"
+              :type="credibilityTagType(String((citePopupDetail.source as any)?.credibility || citePopupDetail.credibility || 'medium'))"
+              style="margin: 8px 0"
+            >{{ (citePopupDetail.source as any)?.credibility || citePopupDetail.credibility || 'medium' }}</el-tag>
+            <div v-if="(citePopupDetail.source as any)?.sourceType" style="margin: 4px 0; color: #909399; font-size: 12px">
+              来源类型: {{ (citePopupDetail.source as any).sourceType }}
+            </div>
+            <div v-if="(citePopupDetail.source as any)?.authors?.length">
+              <span style="font-size:12px;color:#909399">作者: </span>
+              <span style="font-size:12px">{{ (citePopupDetail.source as any).authors.join(', ') }}</span>
+            </div>
+            <div v-if="(citePopupDetail.source as any)?.publicationDate" style="color:#909399;font-size:12px;margin:4px 0">
+              日期: {{ (citePopupDetail.source as any).publicationDate }}
+            </div>
+            <div v-if="(citePopupDetail.source as any)?.url" style="margin:6px 0">
+              <a :href="(citePopupDetail.source as any).url" target="_blank" rel="noopener noreferrer" style="font-size:12px">
+                {{ (citePopupDetail.source as any).url }}
+              </a>
+            </div>
+            <div v-if="(citePopupDetail.source as any)?.abstract" class="cite-abstract">
+              <div style="font-size:12px;color:#909399;margin-bottom:4px">摘要</div>
+              <div style="font-size:12px;line-height:1.6;max-height:150px;overflow-y:auto;white-space:pre-wrap">
+                {{ (citePopupDetail.source as any).abstract }}
+              </div>
+            </div>
+            <div v-if="(citePopupDetail.source as any)?.rawContentAvailable" style="margin-top:8px">
+              <el-tag size="small" type="success">原始内容已缓存</el-tag>
+            </div>
+          </div>
+        </div>
+      </div>
+    </teleport>
   </div>
 </template>
 
@@ -963,5 +1069,71 @@ watch(() => store.messages.length, scrollToBottom)
 .model-bar :deep(.el-select) {
   max-width: 220px;
   width: 100%;
+}
+
+/* ── Citation Markers ────────────────────────────────────────────────── */
+.cite-marker {
+  display: inline-block;
+  color: #409eff;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85em;
+  vertical-align: super;
+  padding: 0 2px;
+  transition: color .2s;
+}
+.cite-marker:hover {
+  color: #337ecc;
+  text-decoration: underline;
+}
+
+/* ── Citation Popup ──────────────────────────────────────────────────── */
+.cite-popup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  background: rgba(0,0,0,.15);
+}
+.cite-popup {
+  position: fixed;
+  transform: translate(-50%, 12px);
+  width: min(420px, 90vw);
+  max-height: 70vh;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.15);
+  overflow-y: auto;
+  z-index: 3001;
+}
+.cite-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e6eb;
+  font-weight: 600;
+  font-size: 14px;
+}
+.cite-popup-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: #909399;
+}
+.cite-popup-body {
+  padding: 12px 16px 16px;
+}
+.cite-source-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1d2129;
+  margin-bottom: 4px;
+}
+.cite-abstract {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f2f3f5;
 }
 </style>

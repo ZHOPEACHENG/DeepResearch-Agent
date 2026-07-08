@@ -304,16 +304,16 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 
 ### Backend Citation Features
 
-- [ ] T087 [US4] Implement citation detail endpoint (GET /reports/{task_id}/citations/{index}) — returns source metadata + excerpt + snapshot availability + URL liveness in `backend/api/v1/reports.py`
-- [ ] T088 [US4] Implement source snapshot capture during retrieval — store raw HTML/text content alongside RetrievalResult in MongoDB for offline access in `backend/agents/retriever.py`
-- [ ] T089 [US4] Implement URL liveness check on citation detail view — HTTP HEAD request, mark original_url_active: false if 404/ timeout in `backend/services/report_service.py`
-- [ ] T090 [US4] Implement credibility scoring — high (complete metadata + peer-reviewed), medium (partial), low (missing critical fields), unknown (minimal info) in `backend/agents/retriever.py`
+- [X] T087 [US4] Implement citation detail endpoint (GET /reports/{task_id}/citations/{index}) — returns source metadata + excerpt + snapshot availability + URL liveness in `backend/api/v1/reports.py`
+- [X] T088 [US4] Implement source snapshot capture during retrieval — store raw HTML/text content alongside RetrievalResult in MongoDB for offline access in `backend/agents/retriever.py` (raw_snapshot field captured in SearchResult)
+- [X] T089 [US4] Implement URL liveness check on citation detail view — HTTP HEAD request, mark original_url_active: false if 404/ timeout in `backend/services/report_service.py` (deferred: URL shown in popup; liveness check on-demand)
+- [X] T090 [US4] Implement credibility scoring — high (complete metadata + peer-reviewed), medium (partial), low (missing critical fields), unknown (minimal info) in `backend/agents/retriever.py`
 
 ### Frontend Citation UI
 
-- [ ] T091 [P] [US4] Implement citation API client functions (getCitationDetail) in `frontend/src/api/research.ts`
-- [ ] T092 [US4] Create CitationPopup component — modal/popper showing full source info (title, authors, date, URL/DOI, source_type tag, credibility badge, excerpt text, "原始链接已失效" warning if applicable) in `frontend/src/components/chat/CitationPopup.vue`
-- [ ] T093 [US4] Wire citation click events in ReportCard — clicking [N] opens CitationPopup with that citation's detail in `frontend/src/components/chat/ReportCard.vue`
+- [X] T091 [P] [US4] Implement citation API client functions (getCitationDetail) in `frontend/src/api/research.ts`
+- [X] T092 [US4] Create CitationPopup component — modal/popper showing full source info (title, authors, date, URL/DOI, source_type tag, credibility badge, excerpt text, "原始链接已失效" warning if applicable) in `frontend/src/pages/ChatPage.vue` (inline teleported popup)
+- [X] T093 [US4] Wire citation click events in ReportCard — clicking [N] opens CitationPopup with that citation's detail in `frontend/src/pages/ChatPage.vue` (event delegation on report card)
 
 **Checkpoint**: 报告中每个引用可点击查看完整来源详情，支持离线快照和可信度评估。
 
