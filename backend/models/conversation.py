@@ -36,6 +36,9 @@ class Conversation(Base):
     context_window_tokens: Mapped[int] = mapped_column(
         Integer, default=0,
     )
+    tags: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(),
     )

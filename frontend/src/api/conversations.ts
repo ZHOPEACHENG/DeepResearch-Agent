@@ -162,3 +162,26 @@ export function sendMessageStream(
 
   return controller
 }
+
+// ── Tag management ──────────────────────────────────────────────
+
+export async function fetchTags(convId: string): Promise<string[]> {
+  const { data } = await apiClient.get<{ tags: string[] }>(
+    `/conversations/${convId}/tags`,
+  )
+  return data.tags
+}
+
+export async function addTag(convId: string, tag: string): Promise<string[]> {
+  const { data } = await apiClient.post<{ tags: string[] }>(
+    `/conversations/${convId}/tags`, { tag },
+  )
+  return data.tags
+}
+
+export async function removeTag(convId: string, tag: string): Promise<string[]> {
+  const { data } = await apiClient.delete<{ tags: string[] }>(
+    `/conversations/${convId}/tags`, { data: { tag } },
+  )
+  return data.tags
+}

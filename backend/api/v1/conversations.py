@@ -383,3 +383,59 @@ async def gap_action(
     return {"status": "ok", "action": body.action}
 
 
+# ── Tag management ─────────────────────────────────────────────────
+
+
+@router.get("/{conversation_id}/tags")
+async def get_tags(
+    conversation_id: UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> dict:
+    """Get tags for a conversation."""
+    try:
+        tags = await conversation_service.get_conversation_tags(
+            conversation_id, current_user.id,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return {"tags": tags}
+
+
+@router.post("/{conversation_id}/tags")
+async def add_tag(
+    conversation_id: UUID,
+    body: dict,
+    current_user: User = Depends(get_current_active_user),
+) -> dict:
+    """Add a tag to a conversation."""
+    tag = (body.get("tag") or "").strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="标签不能为空")
+    try:
+        tags = await conversation_service.add_conversation_tag(
+            conversation_id, current_user.id, tag,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"tags": tags}
+
+
+@router.delete("/{conversation_id}/tags")
+async def remove_tag(
+    conversation_id: UUID,
+    body: dict,
+    current_user: User = Depends(get_current_active_user),
+) -> dict:
+    """Remove a tag from a conversation."""
+    tag = (body.get("tag") or "").strip()
+    if not tag:
+        raise HTTPException(status_code=400, detail="标签不能为空")
+    try:
+        tags = await conversation_service.remove_conversation_tag(
+            conversation_id, current_user.id, tag,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"tags": tags}
+
+

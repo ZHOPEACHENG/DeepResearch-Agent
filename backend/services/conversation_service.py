@@ -42,6 +42,7 @@ def _conversation_to_dict(conv: Conversation, message_count: int, last_message_p
         "id": conv.id,
         "title": conv.title,
         "model": conv.model,
+        "tags": list(conv.tags or []),
         "message_count": message_count,
         "last_message_preview": last_message_preview,
         "created_at": conv.created_at,
@@ -382,3 +383,43 @@ async def auto_generate_title(conv_id: uuid.UUID, user_id: uuid.UUID, content: s
                 conv_id=str(conv_id),
                 title=title,
             )
+
+
+# ── Tag management (stored on Conversation directly) ───────────────
+
+
+async def get_conversation_tags(
+    conv_id: uuid.UUID, user_id: uuid.UUID,
+) -> list[str]:
+    session = get_postgres_session()
+    async with session:
+        conv = await _get_conv_for_user(session, conv_id, user_id)
+        return list(conv.tags or [])
+
+
+async def add_conversation_tag(
+    conv_id: uuid.UUID, user_id: uuid.UUID, tag: str,
+) -> list[str]:
+    session = get_postgres_session()
+    async with session:
+        conv = await _get_conv_for_user(session, conv_id, user_id)
+        current = list(conv.tags or [])
+        if tag not in current:
+            current.append(tag)
+            conv.tags = current
+            await session.commit()
+    return current
+
+
+async def remove_conversation_tag(
+    conv_id: uuid.UUID, user_id: uuid.UUID, tag: str,
+) -> list[str]:
+    session = get_postgres_session()
+    async with session:
+        conv = await _get_conv_for_user(session, conv_id, user_id)
+        current = list(conv.tags or [])
+        if tag in current:
+            current.remove(tag)
+            conv.tags = current
+            await session.commit()
+    return current

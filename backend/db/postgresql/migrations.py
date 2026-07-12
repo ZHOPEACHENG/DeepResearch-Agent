@@ -157,6 +157,10 @@ ALTER TABLE messages
 -- Token version for refresh token rotation (Phase 5 security hardening)
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0;
+
+-- Tags on conversations (Phase 8: US6)
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
 """
 
 DROP_TABLES_SQL = """

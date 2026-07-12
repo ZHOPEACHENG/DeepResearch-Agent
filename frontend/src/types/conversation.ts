@@ -9,6 +9,7 @@ export interface ConversationSummary {
   id: string
   title: string
   model: string
+  tags: string[]
   messageCount: number
   lastMessagePreview: string | null
   createdAt: string

@@ -2,14 +2,53 @@
 import { useRouter, useRoute } from 'vue-router'
 import { useConversationStore } from '@/stores/conversations'
 import { useAuthStore } from '@/stores/auth'
-import { onMounted } from 'vue'
-import { UserFilled } from '@element-plus/icons-vue'
+import { onMounted, ref } from 'vue'
+import { UserFilled, PriceTag, Plus } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
+import * as convApi from '@/api/conversations'
 
 const router = useRouter()
 const route = useRoute()
 const convStore = useConversationStore()
 const authStore = useAuthStore()
+
+// ── Tag management state ──────────────────────────────────────
+const tagEditorConvId = ref<string | null>(null)
+const tagInput = ref('')
+const tagEditTags = ref<string[]>([])
+const tagLoading = ref(false)
+
+async function openTagEditor(convId: string, tags: string[], event: Event) {
+  event.stopPropagation()
+  if (tagEditorConvId.value === convId) {
+    tagEditorConvId.value = null
+  } else {
+    tagEditorConvId.value = convId
+    tagEditTags.value = [...tags]
+  }
+}
+
+async function handleAddTag(convId: string) {
+  const t = tagInput.value.trim()
+  if (!t) return
+  tagLoading.value = true
+  try {
+    tagEditTags.value = await convApi.addTag(convId, t)
+    // update the store's conversation object so it renders immediately
+    const conv = convStore.conversations.find(c => c.id === convId)
+    if (conv) conv.tags = [...tagEditTags.value]
+    tagInput.value = ''
+  } catch { /* ignore */ }
+  tagLoading.value = false
+}
+
+async function handleRemoveTag(convId: string, tag: string) {
+  try {
+    tagEditTags.value = await convApi.removeTag(convId, tag)
+    const conv = convStore.conversations.find(c => c.id === convId)
+    if (conv) conv.tags = [...tagEditTags.value]
+  } catch { /* ignore */ }
+}
 
 onMounted(() => {
   convStore.fetchConversations()
@@ -107,7 +146,44 @@ function formatDate(iso: string): string {
           </div>
           <div class="conv-meta">
             <span>{{ conv.messageCount }}条</span>
+            <!-- inline tags -->
+            <span class="conv-tags" v-if="conv.tags?.length">
+              <el-tag
+                v-for="t in conv.tags"
+                :key="t"
+                size="small"
+                type="info"
+                class="conv-tag-chip"
+              >{{ t }}</el-tag>
+            </span>
+            <span class="conv-tag-btn" @click="openTagEditor(conv.id, conv.tags || [], $event)" title="管理标签">
+              <el-icon :size="14"><PriceTag /></el-icon>
+            </span>
             <span>{{ formatDate(conv.updatedAt) }}</span>
+          </div>
+          <!-- inline tag editor -->
+          <div v-if="tagEditorConvId === conv.id" class="tag-editor" @click.stop>
+            <div class="tag-editor-tags" v-if="tagEditTags.length">
+              <el-tag
+                v-for="t in tagEditTags"
+                :key="t"
+                size="small"
+                closable
+                @close="handleRemoveTag(conv.id, t)"
+              >{{ t }}</el-tag>
+            </div>
+            <div class="tag-editor-input">
+              <el-input
+                v-model="tagInput"
+                size="small"
+                placeholder="输入标签..."
+                @keyup.enter="handleAddTag(conv.id)"
+              >
+                <template #append>
+                  <el-button :icon="Plus" size="small" :loading="tagLoading" @click="handleAddTag(conv.id)" />
+                </template>
+              </el-input>
+            </div>
           </div>
         </div>
       </div>
@@ -269,5 +345,49 @@ function formatDate(iso: string): string {
 .content {
   flex: 1;
   overflow-y: auto;
+}
+
+/* ── Tags ────────────────────────────────────────────────────── */
+
+.conv-tags {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.conv-tag-chip {
+  font-size: 10px;
+  height: 18px;
+  line-height: 18px;
+  padding: 0 5px;
+}
+
+.conv-tag-btn {
+  cursor: pointer;
+  color: #c0c4cc;
+  display: flex;
+  align-items: center;
+}
+
+.conv-tag-btn:hover {
+  color: #409eff;
+}
+
+.tag-editor {
+  margin-top: 6px;
+  padding: 8px;
+  background: #f5f7fa;
+  border-radius: 6px;
+}
+
+.tag-editor-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.tag-editor-input {
+  width: 100%;
 }
 </style>
