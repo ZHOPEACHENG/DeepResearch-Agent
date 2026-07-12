@@ -564,3 +564,40 @@ async def get_stage_outputs(
         raise
 
 
+# ── T114: Tag CRUD ───────────────────────────────────────────────────
+
+
+async def add_tag(task_id: uuid.UUID, user_id: uuid.UUID, tag: str) -> list[str]:
+    """Add a tag to a research task. Returns the updated tag list."""
+    session = get_postgres_session()
+    async with session:
+        task = await _get_task_for_user(session, task_id, user_id)
+        current = list(task.tags or [])
+        if tag not in current:
+            current.append(tag)
+            task.tags = current
+            await session.commit()
+    return current
+
+
+async def remove_tag(task_id: uuid.UUID, user_id: uuid.UUID, tag: str) -> list[str]:
+    """Remove a tag from a research task. Returns the updated tag list."""
+    session = get_postgres_session()
+    async with session:
+        task = await _get_task_for_user(session, task_id, user_id)
+        current = list(task.tags or [])
+        if tag in current:
+            current.remove(tag)
+            task.tags = current
+            await session.commit()
+    return current
+
+
+async def get_tags(task_id: uuid.UUID, user_id: uuid.UUID) -> list[str]:
+    """Get all tags for a research task."""
+    session = get_postgres_session()
+    async with session:
+        task = await _get_task_for_user(session, task_id, user_id)
+        return list(task.tags or [])
+
+

@@ -140,6 +140,43 @@ const clarifyLoading = ref<Record<string, boolean>>({})
 const gapLoading = ref<Record<string, boolean>>({})
 const expandedSections = ref<Record<string, string[]>>({})
 
+// ── Report export state (Phase 8: US6) ────────────────────────────────
+const exportLoading = ref<string | null>(null)
+
+async function handleExport(msg: any, fmt: string) {
+  const reportId = (msg.metadata as any)?.report_id || (msg.metadata as any)?.reportId
+  if (!reportId) return
+  const key = `${reportId}-${fmt}`
+  exportLoading.value = key
+  try {
+    const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1'}/reports/${reportId}/export?format=${fmt}`
+    const token = localStorage.getItem('access_token')
+    const resp = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!resp.ok) {
+      const errBody = await resp.json().catch(() => ({}))
+      throw new Error((errBody as any).detail || `HTTP ${resp.status}`)
+    }
+    const blob = await resp.blob()
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    const disposition = resp.headers.get('Content-Disposition') || ''
+    const star = disposition.match(/filename\*=UTF-8''(.+)/)
+    const plain = disposition.match(/filename="?([^"]+)"?/)
+    a.download = star
+      ? decodeURIComponent(star[1])
+      : plain?.[1] || `report.${fmt === 'pdf' ? 'pdf' : 'md'}`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  } catch (e) {
+    console.error('[export] failed:', e)
+    ElMessage.error('导出失败，请稍后重试')
+  } finally {
+    exportLoading.value = null
+  }
+}
+
 // ── Citation popup state (Phase 6: US4) ────────────────────────────────
 const citePopupVisible = ref(false)
 const citePopupDetail = ref<Record<string, unknown> | null>(null)
@@ -485,6 +522,18 @@ watch(() => store.messages.length, scrollToBottom)
             >
               <div class="report-header">
                 <h4>{{ msg.metadata?.title || '研究报告' }}</h4>
+                <div class="report-actions" v-if="msg.metadata?.report_id || msg.metadata?.reportId">
+                  <el-button
+                    size="small" text type="primary"
+                    :loading="exportLoading === `${msg.metadata?.report_id || msg.metadata?.reportId}-md`"
+                    @click.stop="handleExport(msg, 'markdown')"
+                  >导出 Markdown</el-button>
+                  <el-button
+                    size="small" text type="primary"
+                    :loading="exportLoading === `${msg.metadata?.report_id || msg.metadata?.reportId}-pdf`"
+                    @click.stop="handleExport(msg, 'pdf')"
+                  >导出 PDF</el-button>
+                </div>
               </div>
               <div
                 v-if="msg.metadata?.abstract"

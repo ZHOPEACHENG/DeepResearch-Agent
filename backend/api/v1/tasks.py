@@ -14,7 +14,7 @@ Endpoints:
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from backend.api.deps import get_current_active_user
 from backend.models.user import User
@@ -85,6 +85,7 @@ def _compute_progress(task) -> int:
 @router.get("", response_model=TaskListResponse)
 async def list_tasks(
     status_filter: str | None = None,
+    tag: str | None = Query(default=None, description="按标签筛选"),
     page: int = 1,
     page_size: int = 20,
     current_user: User = Depends(get_current_active_user),
@@ -107,6 +108,9 @@ async def list_tasks(
         page=page,
         page_size=min(page_size, 100),
     )
+    if tag:
+        result["tasks"] = [t for t in result["tasks"] if tag in (t.tags or [])]
+        result["total"] = len(result["tasks"])
     items = [_task_to_status(t) for t in result["tasks"]]
     return TaskListResponse(
         items=items,

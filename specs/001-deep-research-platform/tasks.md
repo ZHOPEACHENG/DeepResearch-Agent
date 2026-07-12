@@ -368,17 +368,17 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 
 ### Export & Tag Features
 
-- [ ] T111 [US6] Implement report export service — Markdown generation (render sections + citations as formatted .md) in `backend/services/report_service.py`
-- [ ] T112 [US6] Implement PDF export — convert Markdown to PDF with academic formatting (heading hierarchy, page headers/footers, citation style) using WeasyPrint or similar in `backend/tools/exporter.py`
-- [ ] T113 [US6] Implement report export endpoint (GET /reports/{task_id}/export?format=markdown|pdf) with proper Content-Type and Content-Disposition headers in `backend/api/v1/reports.py`
-- [ ] T114 [US6] Add tags field (JSON array) to ResearchTask model and implement tag CRUD (add/remove/list) in `backend/services/task_service.py`
-- [ ] T115 [US6] Implement tag filter on task list endpoint — filter by one or more tags (internal, ResearchTask tags used by conversation metadata) in `backend/api/v1/tasks.py`
+- [X] T111 [US6] Implement report export service — Markdown generation (render sections + citations as formatted .md) in `backend/services/report_service.py`
+- [X] T112 [US6] Implement PDF export — convert Markdown to PDF with academic formatting (heading hierarchy, page headers/footers, citation style) using WeasyPrint or similar in `backend/tools/exporter.py`
+- [X] T113 [US6] Implement report export endpoint (GET /reports/{task_id}/export?format=markdown|pdf) with proper Content-Type and Content-Disposition headers in `backend/api/v1/reports.py`
+- [X] T114 [US6] Add tags field (JSON array) to ResearchTask model and implement tag CRUD (add/remove/list) in `backend/services/task_service.py`
+- [X] T115 [US6] Implement tag filter on task list endpoint — filter by one or more tags (internal, ResearchTask tags used by conversation metadata) in `backend/api/v1/tasks.py`
 
 ### Frontend Result Management UI
 
 - [X] ~~T116 [P] [US6] Implement tag management in Pinia task store~~ **SUPERSEDED** — task store deleted (T3b-038); tag actions move to conversations store
 - [X] ~~T117 [US6] Add tag input component to TaskDetailPage~~ **SUPERSEDED** — TaskDetailPage deleted (T3b-036); tag management via conversation context menu
-- [ ] T118 [US6] Add export buttons to ReportCard — "导出 Markdown" and "导出 PDF" buttons, trigger download with loading state in `frontend/src/components/chat/ReportCard.vue`
+- [X] T118 [US6] Add export buttons to ReportCard — "导出 Markdown" and "导出 PDF" buttons, trigger download with loading state in `frontend/src/components/chat/ReportCard.vue`
 - [X] ~~T119 [US6] Add tag filter chips to TaskListPage~~ **SUPERSEDED** — TaskListPage deleted (T3b-035); tag filter on ConversationSidebar
 
 **Checkpoint**: 研究成果完整管理闭环。在 ReportCard 点击导出 Markdown/PDF。标签管理通过会话右键菜单操作。
