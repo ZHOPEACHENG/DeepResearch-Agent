@@ -22,14 +22,14 @@ from fastapi.responses import StreamingResponse
 from backend.api.deps import get_current_active_user
 from backend.models.user import User
 from backend.schemas.conversation import (
+    ClarifyRequest,
     ConversationCreate,
     ConversationListResponse,
     ConversationRead,
     ConversationUpdate,
+    GapActionRequest,
     MessageListResponse,
     MessageRead,
-    ClarifyRequest,
-    GapActionRequest,
     PlanActionRequest,
     SendMessageRequest,
 )
@@ -366,7 +366,9 @@ async def gap_action(
     except Exception:
         pass  # best-effort; the graph resume is the priority
     try:
-        await chat_service.resume_gap_action(body.conversation_id, task_id, body.action)
+        await chat_service.resume_gap_action(
+            body.conversation_id, current_user.id, task_id, body.action,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:

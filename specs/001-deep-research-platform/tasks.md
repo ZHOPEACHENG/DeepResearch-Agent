@@ -329,30 +329,30 @@ URL失效时保留快照。来源不完整的结果标注可信度。
 
 ### Document Processing
 
-- [ ] T094 [US5] Implement file upload handling — validate file type (pdf/docx/txt/md), size ≤50MB, reject password-protected PDFs in `backend/services/knowledge_service.py`
-- [ ] T095 [US5] Implement PDF text extraction with pdfplumber/PyMuPDF in `backend/tools/parser.py`
-- [ ] T096 [US5] Implement DOCX text extraction with python-docx in `backend/tools/parser.py`
-- [ ] T097 [US5] Implement TXT/Markdown text extraction (encoding detection + plain read) in `backend/tools/parser.py`
-- [ ] T098 [US5] Implement text chunking — split extracted text into ~500-token chunks with overlap, track page/paragraph position in `backend/services/knowledge_service.py`
-- [ ] T099 [US5] Implement embedding generation and Elasticsearch indexing — call LLM embed(), index into ES with dense_vector(1536d) + text field (ik_max_word for Chinese) in `backend/services/knowledge_service.py`
-- [ ] T100 [US5] Implement document processing pipeline — upload → validate → extract → chunk → embed → index, update Document.processing_status in `backend/services/knowledge_service.py`
+- [X] T094 [US5] Implement file upload handling — validate file type (pdf/docx/txt/md), size ≤50MB, reject password-protected PDFs in `backend/services/knowledge_service.py`
+- [X] T095 [US5] Implement PDF text extraction with pdfplumber/PyMuPDF in `backend/tools/parser.py`
+- [X] T096 [US5] Implement DOCX text extraction with python-docx in `backend/tools/parser.py`
+- [X] T097 [US5] Implement TXT/Markdown text extraction (encoding detection + plain read) in `backend/tools/parser.py`
+- [X] T098 [US5] Implement text chunking — split extracted text into ~500-token chunks with overlap, track page/paragraph position in `backend/services/knowledge_service.py`
+- [X] T099 [US5] Implement embedding generation and Elasticsearch indexing — call LLM embed(), index into ES with dense_vector(1536d) + text field (ik_max_word for Chinese) in `backend/services/knowledge_service.py`
+- [X] T100 [US5] Implement document processing pipeline — upload → validate → extract → chunk → embed → index, update Document.processing_status in `backend/services/knowledge_service.py`
 
 ### Knowledge Base API
 
-- [ ] T101 [US5] Implement Knowledge API endpoints (POST /knowledge/documents, GET /knowledge/documents, GET /knowledge/documents/{id}, DELETE /knowledge/documents/{id}) in `backend/api/v1/knowledge.py`
-- [ ] T102 [US5] Implement keyword search endpoint (GET /knowledge/search?q=) — Elasticsearch text query with highlighting in `backend/api/v1/knowledge.py`
-- [ ] T103 [US5] Implement QA endpoint (POST /knowledge/ask) — vector similarity search for relevant chunks, construct prompt with context, call LLM, return answer + source citations in `backend/api/v1/knowledge.py`
+- [X] T101 [US5] Implement Knowledge API endpoints (POST /knowledge/documents, GET /knowledge/documents, GET /knowledge/documents/{id}, DELETE /knowledge/documents/{id}) in `backend/api/v1/knowledge.py`
+- [X] T102 [US5] Implement keyword search endpoint (GET /knowledge/search?q=) — Elasticsearch text query with highlighting in `backend/api/v1/knowledge.py`
+- [X] T103 [US5] Implement QA endpoint (POST /knowledge/ask) — vector similarity search for relevant chunks, construct prompt with context, call LLM, return answer + source citations in `backend/api/v1/knowledge.py`
 
 ### Frontend Knowledge Base UI
 
-- [ ] T103a [US5] Define Document Pydantic schemas (DocumentUpload, DocumentRead, DocumentList, AskRequest, AskResponse, SearchResultRead) in `backend/schemas/document.py`
-- [ ] T104 [P] [US5] Define TypeScript types for Document, DocumentChunk, SearchResult, AskResponse in `frontend/src/types/document.ts`
-- [ ] T105 [P] [US5] Implement knowledge API client functions (uploadDocument, listDocuments, deleteDocument, searchKnowledge, askQuestion) in `frontend/src/api/knowledge.ts`
-- [ ] T106 [US5] Implement Pinia knowledge store with document list, upload/delete actions, search/ask state in `frontend/src/stores/knowledge.ts`
-- [ ] T107 [US5] Create KnowledgeBasePage — document list with status badges, upload button, delete confirmation in `frontend/src/pages/KnowledgeBasePage.vue`
-- [ ] T108 [US5] Create FileUpload component — drag-and-drop zone, file type/size validation, upload progress bar in `frontend/src/components/common/FileUpload.vue`
-- [ ] T109 [US5] Create SearchBar component with keyword input and result list (document name + matching excerpt + score) in `frontend/src/components/common/SearchBar.vue`
-- [ ] T110 [US5] Create QA panel — natural language question input, answer display with source document links and chunk excerpts in `frontend/src/pages/KnowledgeBasePage.vue`
+- [X] T103a [US5] Define Document Pydantic schemas (DocumentUpload, DocumentRead, DocumentList, AskRequest, AskResponse, SearchResultRead) in `backend/schemas/document.py`
+- [X] T104 [P] [US5] Define TypeScript types for Document, DocumentChunk, SearchResult, AskResponse in `frontend/src/types/document.ts`
+- [X] T105 [P] [US5] Implement knowledge API client functions (uploadDocument, listDocuments, deleteDocument, searchKnowledge, askQuestion) in `frontend/src/api/knowledge.ts`
+- [X] T106 [US5] Implement Pinia knowledge store with document list, upload/delete actions, search/ask state in `frontend/src/stores/knowledge.ts`
+- [X] T107 [US5] Create KnowledgeBasePage — document list with status badges, upload button, delete confirmation in `frontend/src/pages/KnowledgeBasePage.vue`
+- [X] T108 [US5] Create FileUpload component — drag-and-drop zone, file type/size validation, upload progress bar in `frontend/src/components/common/FileUpload.vue`
+- [X] T109 [US5] Create SearchBar component with keyword input and result list (document name + matching excerpt + score) in `frontend/src/components/common/SearchBar.vue`
+- [X] T110 [US5] Create QA panel — natural language question input, answer display with source document links and chunk excerpts in `frontend/src/pages/KnowledgeBasePage.vue`
 
 **Checkpoint**: 知识库完整可用。上传文档→自动处理→搜索→自然语言问答，全链路通。
 

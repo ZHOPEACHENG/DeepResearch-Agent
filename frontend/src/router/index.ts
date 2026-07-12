@@ -37,6 +37,11 @@ const router = createRouter({
           component: () => import('@/pages/ChatPage.vue'),
         },
         {
+          path: 'knowledge',
+          name: 'Knowledge',
+          component: () => import('@/pages/KnowledgeBasePage.vue'),
+        },
+        {
           path: 'profile',
           name: 'Profile',
           component: () => import('@/pages/ProfilePage.vue'),

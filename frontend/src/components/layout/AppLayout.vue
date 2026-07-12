@@ -25,6 +25,10 @@ function goToChat(id?: string) {
   router.push(id ? `/chat/${id}` : '/chat')
 }
 
+function goToKnowledge() {
+  router.push('/knowledge')
+}
+
 function goToProfile() {
   router.push('/profile')
 }
@@ -119,6 +123,9 @@ function formatDate(iso: string): string {
           </div>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item @click="goToKnowledge">
+                知识库管理
+              </el-dropdown-item>
               <el-dropdown-item @click="goToProfile">
                 个人资料
               </el-dropdown-item>

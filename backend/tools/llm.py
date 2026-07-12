@@ -31,10 +31,10 @@ import json
 from functools import lru_cache
 
 from langchain.chat_models import init_chat_model
-from langchain.embeddings import init_embeddings
+from langchain_deepseek import ChatDeepSeek
 
 from backend.core.config import settings
-from langchain_deepseek import ChatDeepSeek
+
 
 def _resolve_model(name: str) -> str:
     """Map a logical agent name to a concrete model string.
@@ -59,7 +59,7 @@ def get_chat_model(
     temperature: float = 0.3,
     max_tokens: int = 4096,
     model_override: str | None = None,
-) -> "BaseChatModel":  # type: ignore[no-any-unimported]
+) -> BaseChatModel:  # type: ignore[no-any-unimported]
     """Build a (cached) LangChain chat model instance for a logical agent name.
 
     Uses ``init_chat_model`` for automatic provider routing.
@@ -107,14 +107,60 @@ def get_chat_model(
     return chat_model
 
 
+class _EmbeddingWrapper:
+    """Minimal embedding wrapper using the ``openai`` library directly.
+
+    ``OpenAIEmbeddings`` defaults to ``tiktoken_enabled=True`` which
+    tokenizes text into integer token-IDs and sends those as the API
+    ``input``.  OpenAI's own API handles tokenized input, but
+    OpenAI-*compatible* endpoints (DashScope, vLLM, Ollama, LiteLLM)
+    require plain strings.  This wrapper skips tokenization entirely
+    and always sends raw text, making it portable across providers.
+    """
+
+    def __init__(self) -> None:
+        from openai import AsyncOpenAI
+
+        embed_url = settings.embedding_base_url or settings.base_url
+        api_key = settings.embedding_api_key or None
+        self._client = AsyncOpenAI(
+            base_url=embed_url or None,
+            api_key=api_key or None,
+            max_retries=3,
+            timeout=60.0,
+        )
+        self._model: str = settings.llm_embed_model
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        resp = await self._client.embeddings.create(
+            model=self._model,
+            input=texts,
+        )
+        return [d.embedding for d in resp.data]
+
+    async def aembed_query(self, text: str) -> list[float]:
+        resp = await self._client.embeddings.create(
+            model=self._model,
+            input=text,
+        )
+        return resp.data[0].embedding
+
+
 @lru_cache(maxsize=1)
-def get_embedding_model() -> "Embeddings":  # type: ignore[no-any-unimported]
-    """Build a cached embedding model instance via ``init_embeddings``."""
-    return init_embeddings(
-        settings.llm_embed_model, provider="openai",
-        max_retries=3,
-        timeout=60.0,
-    )
+def get_embedding_model() -> _EmbeddingWrapper:
+    """Build a cached embedding model instance.
+
+    Returns a thin wrapper around the ``openai`` library's async client
+    that sends raw text (never tokenized) to any OpenAI-compatible
+    endpoint — DashScope, vLLM, Ollama, LiteLLM, etc.
+
+    DashScope example (``.env``)::
+
+        LLM_EMBED_MODEL=text-embedding-v3
+        EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+        EMBEDDING_API_KEY=sk-your-dashscope-key
+    """
+    return _EmbeddingWrapper()
 
 
 # ── JSON utility ───────────────────────────────────────────────────────

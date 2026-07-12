@@ -25,14 +25,16 @@ class Settings(BaseSettings):
 
     # ── LLM ──────────────────────────────────────────────────────────
     llm_model: str = "gpt-4o"              # Default model for most agents
-    llm_embed_model: str = "text-embedding-3-small"
+    llm_embed_model: str = "text-embedding-v4"
     chat_model: str = "gpt-4o"             # Model for conversational replies
     summarization_model: str = "gpt-4o-mini"  # Cheaper/faster for page summarization
     summarization_model_max_tokens: int = 1024  # Output cap for summarization calls
     max_content_length: int = 50000        # Max chars of webpage content before summarization
     max_context_tokens: int = 128000       # Max tokens kept in conversation context window
     available_models: list[str] = ["gpt-4o", "gpt-4o-mini", "claude-sonnet-4-6", "claude-opus-4-8"]
-    base_url: str = ""
+    base_url: str = ""                     # Chat/LLM API base URL (shared default)
+    embedding_base_url: str = ""           # Embedding API base URL (falls back to base_url)
+    embedding_api_key: str = ""            # Embedding API key (falls back to OPENAI_API_KEY env)
 
     # Deep thinking — when enabled, reasoning models keep their thinking
     # mode active.  WARNING: thinking mode rejects tool_choice, so agents
@@ -99,6 +101,10 @@ class Settings(BaseSettings):
     max_task_execution_seconds: int = 7200  # 2 hours
     max_concurrent_tasks_per_user: int = 3
     max_gap_rounds: int = 3                    # Max gap-fill iterations in the gap_loop (FR-008)
+
+    # ── Upload ──────────────────────────────────────────────────────
+    upload_dir: str = "./uploads"
+    max_upload_size_mb: int = 50
 
     # ── CORS ─────────────────────────────────────────────────────────
     cors_origins: list[str] = ["http://localhost:3000"]

@@ -189,7 +189,7 @@ async def _resolve_gap_parent(
 
 
 async def resume_gap_action(
-    conversation_id: uuid.UUID, task_id: str, action: str,
+    conversation_id: uuid.UUID, user_id: uuid.UUID, task_id: str, action: str,
 ) -> None:
     """Resume the research graph after a gap_confirm interrupt."""
     if action not in ("answer", "skip"):
@@ -238,7 +238,7 @@ async def resume_gap_action(
                 # reload will pick up the new gap_question + intermediate cards.
                 return
             async for _ in _process_research_chunk(
-                chunk, conversation_id, parent_id, None, "research", task_id,
+                chunk, conversation_id, user_id, parent_id, None, "research", task_id,
             ):
                 pass  # messages persisted to DB, no SSE client connected
     except Exception:
@@ -642,7 +642,7 @@ async def _run_research(
                         yield _sse("gap_question", data)
                 return
             async for event in _process_research_chunk(
-                chunk, conversation_id, user_message_id, model, mode, task_id_str,
+                chunk, conversation_id, user_id, user_message_id, model, mode, task_id_str,
             ):
                 yield event
     except GraphInterrupt as gi:
@@ -675,6 +675,7 @@ async def _run_research(
 async def _process_research_chunk(
     chunk: dict,
     conversation_id: uuid.UUID,
+    user_id: uuid.UUID,
     parent_message_id: uuid.UUID,
     model: str | None,
     mode: Literal["chat", "research"],
@@ -787,5 +788,56 @@ async def _process_research_chunk(
                 data["messageId"] = str(msg.id)
                 yield _sse("report_complete", data)
 
+                # ── Auto-ingest report into knowledge base ──────────
+                asyncio.create_task(_ingest_report_to_kb(
+                    user_id=user_id,
+                    title=report.get("title", "研究报告"),
+                    abstract=report.get("abstract", ""),
+                    sections=report.get("sections", []),
+                    gap_notes=report.get("gap_notes", ""),
+                ))
+
         else:
             logger.debug("unhandled_graph_node", node=node_name)
+
+
+# ── Report → Knowledge Base auto-ingestion ───────────────────────────
+
+
+async def _ingest_report_to_kb(
+    user_id: uuid.UUID,
+    title: str,
+    abstract: str,
+    sections: list[dict],
+    gap_notes: str = "",
+) -> None:
+    """Convert a finished research report to plain text and index it into
+    the knowledge base so it becomes searchable and QA-able alongside
+    user-uploaded documents."""
+    try:
+        # Build a plain-text representation of the report
+        parts = [f"# {title}", "", abstract, ""]
+        for sec in sections:
+            heading = sec.get("heading", "")
+            content = sec.get("content", "")
+            if heading or content:
+                parts.append(f"## {heading}" if heading else "")
+                parts.append(content)
+                parts.append("")
+        if gap_notes:
+            parts.append("## 知识缺口说明")
+            parts.append(gap_notes)
+
+        text = "\n".join(parts).strip()
+
+        from backend.services import knowledge_service
+        doc_id = await knowledge_service.ingest_text(
+            user_id=user_id, content=text, title=title,
+            source_label="research_report",
+        )
+        logger.info("report_ingested_to_kb", title=title[:80],
+                    doc_id=str(doc_id) if doc_id else "skipped",
+                    char_count=len(text))
+    except Exception:
+        logger.error("report_ingest_to_kb_failed", title=title[:80],
+                     exc_info=True)
