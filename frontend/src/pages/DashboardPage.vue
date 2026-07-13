@@ -10,7 +10,7 @@ import { useRouter } from 'vue-router'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import {
-  ChatDotRound, DataAnalysis, Document, Files, Plus,
+  ChatDotRound, Document, Files, Plus,
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -19,14 +19,12 @@ const knowledgeStore = useKnowledgeStore()
 
 interface DashboardStats {
   totalConversations: number
-  activeResearchCount: number
   completedResearchCount: number
   knowledgeDocCount: number
 }
 
 const stats = ref<DashboardStats>({
   totalConversations: 0,
-  activeResearchCount: 0,
   completedResearchCount: 0,
   knowledgeDocCount: 0,
 })
@@ -94,18 +92,10 @@ function formatDate(iso: string): string {
       </el-card>
 
       <el-card class="stat-card" shadow="hover" v-loading="loading">
-        <div class="stat-icon active"><el-icon :size="28"><DataAnalysis /></el-icon></div>
-        <div class="stat-body">
-          <div class="stat-value">{{ stats.activeResearchCount }}</div>
-          <div class="stat-label">进行中研究</div>
-        </div>
-      </el-card>
-
-      <el-card class="stat-card" shadow="hover" v-loading="loading">
         <div class="stat-icon completed"><el-icon :size="28"><Files /></el-icon></div>
         <div class="stat-body">
           <div class="stat-value">{{ stats.completedResearchCount }}</div>
-          <div class="stat-label">已完成报告</div>
+          <div class="stat-label">已生成报告</div>
         </div>
       </el-card>
 
@@ -196,7 +186,7 @@ function formatDate(iso: string): string {
 /* ── Stats Grid ──────────────────────────────────────────────────── */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -221,7 +211,6 @@ function formatDate(iso: string): string {
 }
 
 .stat-icon.chats { background: #ecf5ff; color: #409eff; }
-.stat-icon.active { background: #fdf6ec; color: #e6a23c; }
 .stat-icon.completed { background: #f0f9eb; color: #67c23a; }
 .stat-icon.docs { background: #fef0f0; color: #f56c6c; }
 

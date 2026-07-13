@@ -477,9 +477,11 @@ watch(() => store.messages.length, scrollToBottom)
                 <el-tag type="warning" size="small">知识缺口: {{ msg.metadata?.gapCount || msg.metadata?.gap_count || 0 }}</el-tag>
                 <el-tag v-if="msg.metadata?.criticalCount || msg.metadata?.critical_count" type="danger" size="small">严重缺口: {{ msg.metadata?.criticalCount || msg.metadata?.critical_count }}</el-tag>
               </div>
-              <div v-if="msg.metadata?.summaryPreview || msg.metadata?.summary_preview" class="analysis-preview" style="margin-top:8px; opacity:0.8; max-height:120px; overflow:hidden">
-                <p style="font-size:13px; white-space:pre-wrap">{{ msg.metadata?.summaryPreview || msg.metadata?.summary_preview }}</p>
-              </div>
+              <el-collapse v-if="msg.metadata?.summaryPreview || msg.metadata?.summary_preview">
+                <el-collapse-item title="查看知识整合详情" :name="`analysis-${msg.id}`">
+                  <div class="analysis-preview markdown-body" v-html="renderMarkdown(String(msg.metadata?.summaryPreview || msg.metadata?.summary_preview))"></div>
+                </el-collapse-item>
+              </el-collapse>
             </div>
             <!-- Clarifying question -->
             <div
@@ -941,6 +943,21 @@ watch(() => store.messages.length, scrollToBottom)
 }
 
 /* ── Message Cards (plan / report) ────────────────────────────────── */
+/* ── Analysis card collapse: prevent content clipping ────────── */
+.msg-card.analysis :deep(.el-collapse-item__wrap) {
+  max-height: none;
+  overflow: visible;
+}
+.msg-card.analysis :deep(.el-collapse-item__content) {
+  max-height: none;
+  overflow: visible;
+  padding-bottom: 12px;
+}
+.analysis-preview {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
 .msg-card {
   padding: 16px;
   background: #f5f7fa;

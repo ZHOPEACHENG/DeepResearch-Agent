@@ -94,20 +94,25 @@ class AnalyzerAgent(Agent):
             state["knowledge_gaps"] = gaps
             return state
 
-        model = get_chat_model("analyzer", temperature=0.2, max_tokens=8192)
-        structured = model.with_structured_output(AnalyzerOutput, method="function_calling")
+        model = get_chat_model("analyzer", temperature=0.2, max_tokens=16384)
         prompt = self._build_initial_prompt(questions, initial_results)
         messages = [
             {"role": "system", "content": _ANALYZER_SYSTEM},
             {"role": "user", "content": prompt},
         ]
 
-        output: AnalyzerOutput | None = await self._try_structured_output(
-            structured, messages, task_id_str,
+        # Always use prompt-based output for the analyzer.
+        # Structured output (function_calling) silently truncates long
+        # ``summary_content`` on DeepSeek-compatible providers — the model
+        # encodes the output as a JSON tool-call which has an implicit token
+        # cap well below the configured max_tokens.
+        output: AnalyzerOutput | None = await self._try_prompt_based_output(
+            model, messages, task_id_str,
         )
         if output is None:
-            output = await self._try_prompt_based_output(
-                model, messages, task_id_str,
+            structured = model.with_structured_output(AnalyzerOutput, method="function_calling")
+            output = await self._try_structured_output(
+                structured, messages, task_id_str,
             )
 
         analysis_round = int(state.get("analysis_round", 1) or 1)
@@ -261,21 +266,28 @@ class AnalyzerAgent(Agent):
     ) -> str:
         """Build the user message with questions and source list.
 
-        Sources are capped to stay under ``_MAX_PROMPT_CHARS``.
+        Sources are numbered ``[1]``, ``[2]``, … so the LLM cites them with
+        short markers instead of opaque MongoDB ObjectIds.  The mapping
+        ``[N] → result_id`` is stored on the agent for downstream lookup.
         """
         q_block = "\n".join(questions) if questions else "(无明确研究问题)"
-        prefix = f"你需要回答以下研究问题:\n{q_block}\n\n"
+        prefix = (
+            f"你需要回答以下研究问题:\n{q_block}\n\n"
+            f"引用来源时请使用 [N] 序号标记（如 [1]、[2,3]），不要使用原始 id。\n\n"
+        )
         footer = "请整合以上来源，产出知识摘要、引用映射和缺口分析。"
 
         budget = self._MAX_PROMPT_CHARS - len(prefix) - len(footer)
         src_lines: list[str] = []
         chars_used = 0
-        for r in results:
-            rid = r.get("result_id") or r.get("_id") or "(no_id)"
+        self._ref_map: dict[int, str] = {}  # [N] → result_id
+        for idx, r in enumerate(results, start=1):
+            rid = r.get("result_id") or r.get("_id") or f"(no_id_{idx})"
+            self._ref_map[idx] = rid
             title = (r.get("title") or "").strip()
             stype = r.get("source_type", "")
             abstract = (r.get("abstract") or r.get("excerpt") or "").strip()[:800]
-            line = f"- id={rid} | type={stype} | title={title}\n  content: {abstract}"
+            line = f"[{idx}] type={stype} | title={title}\n    content: {abstract}"
             if chars_used + len(line) > budget:
                 break
             src_lines.append(line)

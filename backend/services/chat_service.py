@@ -621,6 +621,10 @@ async def _run_research(
         "analysis_round": 1,
         "all_retrieval_results": [],
     }
+    # Emit first phase label BEFORE graph execution so the frontend shows
+    # "正在检索..." while the retriever is actually running (not after).
+    yield _sse("phase_change", {"phase": "retrieving", "message": PHASE_LABELS["retriever"]})
+
     try:
         async for chunk in get_research_graph().astream(
             graph_input, config, stream_mode="updates",
@@ -712,7 +716,6 @@ async def _process_research_chunk(
         if node_name == "retriever":
             results = node_state.get("retrieval_results") or []
             all_results = node_state.get("all_retrieval_results") or []
-            yield _sse("phase_change", {"phase": "retrieving", "message": PHASE_LABELS["retriever"]})
             data = {
                 "taskId": task_id_str,
                 "round": node_state.get("analysis_round", 1),
@@ -735,9 +738,11 @@ async def _process_research_chunk(
             )
             data["messageId"] = str(msg.id)
             yield _sse("retrieval_complete", data)
+            # Tee up the next phase label so the spinner updates before the
+            # analyzer results arrive (which may take 30+ seconds).
+            yield _sse("phase_change", {"phase": "analyzing", "message": PHASE_LABELS["analyzer"]})
 
         elif node_name == "analyzer":
-            yield _sse("phase_change", {"phase": "analyzing", "message": PHASE_LABELS["analyzer"]})
             summary = node_state.get("knowledge_summary") or {}
             gaps = node_state.get("knowledge_gaps") or []
             gap_count = len(gaps)
@@ -749,7 +754,7 @@ async def _process_research_chunk(
                 "round": round_num,
                 "gapCount": gap_count,
                 "criticalCount": sum(1 for g in gaps if g.get("severity") == "critical"),
-                "summaryPreview": (summary.get("content") or summary.get("summary_content") or "")[:400],
+                "summaryPreview": (summary.get("content") or summary.get("summary_content") or ""),
             }
             msg = await conversation_service.save_message(
                 conversation_id=conversation_id,
@@ -767,14 +772,18 @@ async def _process_research_chunk(
             )
             analysis_card_data["messageId"] = str(msg.id)
             yield _sse("analysis_complete", analysis_card_data)
+            # Tee up synthesizer phase — only if no critical gaps found
+            # (gap_confirm node will handle its own messaging if gaps exist)
+            if not any(g.get("severity") == "critical" for g in gaps):
+                yield _sse("phase_change", {"phase": "synthesizing", "message": PHASE_LABELS["synthesizer"]})
 
         elif node_name == "synthesizer":
-            yield _sse("phase_change", {"phase": "synthesizing", "message": PHASE_LABELS["synthesizer"]})
+            # Synthesizer is fast — after it finishes, tee up writer
+            yield _sse("phase_change", {"phase": "writing", "message": PHASE_LABELS["writer"]})
 
         elif node_name == "writer":
             report = node_state.get("final_report")
             if report:
-                yield _sse("phase_change", {"phase": "writing", "message": PHASE_LABELS["writer"]})
                 data = {
                     "messageId": "",
                     "taskId": task_id_str,
