@@ -12,7 +12,7 @@ Endpoints are grouped by OpenAPI tag:
 
 from fastapi import APIRouter
 
-from backend.api.v1 import auth, conversations, knowledge, reports, research, tasks, users
+from backend.api.v1 import auth, conversations, dashboard, knowledge, reports, research, tasks, users
 from backend.core.config import settings
 
 router = APIRouter(prefix="/api/v1")
@@ -25,6 +25,7 @@ router.include_router(tasks.router, tags=["Tasks"], deprecated=True)
 router.include_router(research.router, tags=["Research"])
 router.include_router(reports.router, tags=["Reports"])
 router.include_router(knowledge.router, tags=["Knowledge"])
+router.include_router(dashboard.router, tags=["Dashboard"])
 
 
 @router.get("/models")

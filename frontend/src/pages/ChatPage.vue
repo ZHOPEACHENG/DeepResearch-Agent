@@ -307,10 +307,24 @@ watch(() => store.messages.length, scrollToBottom)
         <p v-else>发送第一条消息开始对话</p>
       </div>
 
-      <!-- Loading state -->
+      <!-- Loading skeletons (T121) -->
       <div v-if="store.loading" class="loading-state">
-        <el-icon class="is-loading" :size="24"><Loading /></el-icon>
-        <p>加载对话中...</p>
+        <div class="message-row assistant">
+          <div class="skeleton-avatar"></div>
+          <div class="msg-bubble skeleton-bubble" style="width:360px;height:60px"></div>
+        </div>
+        <div class="message-row user">
+          <div class="msg-bubble skeleton-bubble" style="width:240px;height:40px;background:var(--skeleton-user-bg)"></div>
+          <div class="skeleton-avatar"></div>
+        </div>
+        <div class="message-row assistant">
+          <div class="skeleton-avatar"></div>
+          <div class="msg-bubble skeleton-bubble" style="width:420px;height:80px"></div>
+        </div>
+        <div class="message-row user">
+          <div class="msg-bubble skeleton-bubble" style="width:180px;height:36px;background:var(--skeleton-user-bg)"></div>
+          <div class="skeleton-avatar"></div>
+        </div>
       </div>
 
       <!-- Messages -->
@@ -803,9 +817,32 @@ watch(() => store.messages.length, scrollToBottom)
 .welcome h2 { font-size: 24px; margin-bottom: 8px; }
 
 .loading-state {
-  text-align: center;
-  margin-top: 30vh;
-  color: #909399;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px 0;
+}
+
+.skeleton-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #e8eaed;
+  flex-shrink: 0;
+  animation: skeleton-shimmer 1.5s infinite;
+}
+
+.skeleton-bubble {
+  --skeleton-user-bg: #d5e3ff;
+  background: #e8eaed;
+  border-radius: 12px;
+  animation: skeleton-shimmer 1.5s infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0%   { opacity: 0.4; }
+  50%  { opacity: 0.8; }
+  100% { opacity: 0.4; }
 }
 
 /* ── Message Row (avatar + bubble) ────────────────────────────────── */

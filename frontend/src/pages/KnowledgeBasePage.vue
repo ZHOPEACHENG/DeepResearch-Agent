@@ -155,7 +155,25 @@ const activeCount = computed(() =>
         <FileUpload ref="fileUploadRef" @upload="handleUpload" />
 
         <!-- Document list -->
-        <div class="doc-list" v-loading="store.loading">
+        <div class="doc-list">
+          <!-- Loading skeletons (T121) -->
+          <template v-if="store.loading">
+            <div v-for="n in 5" :key="'skel-'+n" class="doc-item">
+              <el-skeleton animated style="width:100%">
+                <template #template>
+                  <div style="display:flex;align-items:center;gap:10px;width:100%">
+                    <el-skeleton-item variant="circle" style="width:20px;height:20px" />
+                    <div style="flex:1">
+                      <el-skeleton-item variant="text" style="width:70%;height:18px" />
+                      <el-skeleton-item variant="text" style="width:50%;height:14px;margin-top:4px" />
+                    </div>
+                    <el-skeleton-item variant="text" style="width:50px;height:22px" />
+                  </div>
+                </template>
+              </el-skeleton>
+            </div>
+          </template>
+
           <div v-if="!store.loading && !store.documents.length" class="empty-state">
             <el-icon :size="48"><Document /></el-icon>
             <p>暂无文档</p>

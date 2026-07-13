@@ -29,6 +29,7 @@ from backend.core.security import (
 )
 from backend.models import User
 from backend.schemas.user import TokenPair, UserRead, UserRegisterRequest
+from backend.utils.log_mask import mask_email, mask_username
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -77,8 +78,8 @@ async def register_user(req: UserRegisterRequest) -> TokenPair:
             )
             logger.warning(
                 "register_conflict",
-                username=req.username,
-                email=str(req.email),
+                username=mask_username(req.username),
+                email=mask_email(str(req.email)),
                 conflict=conflict_field,
             )
             raise ValueError("用户名或邮箱已被注册")
@@ -103,7 +104,7 @@ async def register_user(req: UserRegisterRequest) -> TokenPair:
     access_token = create_access_token(user_id, token_version=0)
     refresh_token = create_refresh_token(user_id, token_version=0)
 
-    logger.info("user_registered", user_id=user_id, username=req.username)
+    logger.info("user_registered", user_id=user_id, username=mask_username(req.username))
     return TokenPair(access_token=access_token, refresh_token=refresh_token)
 
 

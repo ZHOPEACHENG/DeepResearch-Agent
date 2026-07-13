@@ -13,11 +13,13 @@ from typing import Any
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.core.config import settings
 from backend.core.database import get_mongo_db, get_postgres_session
 from backend.models.task import ResearchTask
 from backend.utils.datetime import now_dt
+from backend.utils.log_mask import mask_username
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -26,6 +28,13 @@ logger = get_logger(__name__)
 # ═══════════════════════════════════════════════════════════════════════
 # Internal Helpers
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def _sanitize_extra(fields: dict) -> dict:
+    """Replace values with their type indicators to prevent PII leaks in logs."""
+    if not fields:
+        return {}
+    return {k: f"<{type(v).__name__}>" for k, v in fields.items()}
 
 async def _get_task_for_user(
     session: AsyncSession,
@@ -154,6 +163,9 @@ async def update_task_status(
         # serialisation guarantee: another concurrent start will block until
         # we commit, then see our newly created running row.
         if new_status == "running":
+            # Record the start time for timeout tracking (T123)
+            if task.started_at is None:
+                task.started_at = now_dt()
             limit = settings.max_concurrent_tasks_per_user
             lock_result = await session.execute(
                 select(ResearchTask)
@@ -198,7 +210,7 @@ async def update_task_status(
         task_id=str(task_id),
         old_status=old_status,
         new_status=new_status,
-        extra=extra_fields,
+        extra=_sanitize_extra(extra_fields),
     )
     return task
 
@@ -252,7 +264,7 @@ async def create_task(
         "task_created",
         task_id=str(task.id),
         user_id=str(user_id),
-        topic=stripped[:80],
+        topic_len=len(stripped),
     )
     return task
 
@@ -264,6 +276,9 @@ async def get_task(task_id: uuid.UUID, user_id: uuid.UUID) -> ResearchTask:
     Raises:
         ValueError: If the task does not exist for this user.
     """
+    # T123: Auto-fail if this task has timed out
+    await check_and_fail_timeout_tasks(user_id)
+
     session = get_postgres_session()
     async with session:
         task = await _get_task_for_user(session, task_id, user_id)
@@ -284,6 +299,9 @@ async def list_tasks(
     Returns:
         {"tasks": list[ResearchTask], "total": int, "page": int, "page_size": int}
     """
+    # T123: Auto-fail any running tasks that have exceeded the timeout
+    await check_and_fail_timeout_tasks(user_id)
+
     session = get_postgres_session()
     async with session:
         conditions = [ResearchTask.user_id == user_id]
@@ -576,8 +594,10 @@ async def add_tag(task_id: uuid.UUID, user_id: uuid.UUID, tag: str) -> list[str]
         if tag not in current:
             current.append(tag)
             task.tags = current
+            flag_modified(task, "tags")  # force SQLAlchemy to detect JSONB change
             await session.commit()
-    return current
+            await session.refresh(task)
+    return list(task.tags or [])
 
 
 async def remove_tag(task_id: uuid.UUID, user_id: uuid.UUID, tag: str) -> list[str]:
@@ -589,8 +609,10 @@ async def remove_tag(task_id: uuid.UUID, user_id: uuid.UUID, tag: str) -> list[s
         if tag in current:
             current.remove(tag)
             task.tags = current
+            flag_modified(task, "tags")  # force SQLAlchemy to detect JSONB change
             await session.commit()
-    return current
+            await session.refresh(task)
+    return list(task.tags or [])
 
 
 async def get_tags(task_id: uuid.UUID, user_id: uuid.UUID) -> list[str]:
@@ -599,5 +621,68 @@ async def get_tags(task_id: uuid.UUID, user_id: uuid.UUID) -> list[str]:
     async with session:
         task = await _get_task_for_user(session, task_id, user_id)
         return list(task.tags or [])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# T123: Task Execution Timeout
+# ═══════════════════════════════════════════════════════════════════════
+
+
+async def check_and_fail_timeout_tasks(user_id: uuid.UUID) -> int:
+    """
+    Auto-mark running tasks as failed if they exceed the max execution time.
+
+    Scans all running tasks for the given user and fails any that have been
+    running longer than ``max_task_execution_seconds`` (default 2 hours).
+
+    Returns:
+        Number of tasks that were auto-failed.
+    """
+    import datetime as _dt
+
+    max_seconds = settings.max_task_execution_seconds
+    cutoff = now_dt() - _dt.timedelta(seconds=max_seconds)
+
+    session = get_postgres_session()
+    failed_count = 0
+    async with session:
+        result = await session.execute(
+            select(ResearchTask).where(
+                and_(
+                    ResearchTask.user_id == user_id,
+                    ResearchTask.status == "running",
+                    ResearchTask.started_at.isnot(None),
+                    ResearchTask.started_at < cutoff,
+                )
+            ).with_for_update()
+        )
+        timed_out = result.scalars().all()
+
+        for task in timed_out:
+            task.status = "failed"
+            task.error_message = (
+                f"任务执行超时（超过 {max_seconds // 3600} 小时），"
+                f"系统自动终止。开始时间: {task.started_at.isoformat() if task.started_at else 'unknown'}"
+            )
+            task.updated_at = now_dt()
+            task.completed_at = now_dt()
+            failed_count += 1
+            logger.warning(
+                "task_timeout_auto_failed",
+                task_id=str(task.id),
+                user_id=str(user_id),
+                started_at=str(task.started_at),
+                elapsed_seconds=max_seconds,
+            )
+
+        if failed_count:
+            await session.commit()
+            logger.info(
+                "task_timeout_batch_complete",
+                user_id=str(user_id),
+                failed_count=failed_count,
+            )
+
+    return failed_count
 
 

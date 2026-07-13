@@ -24,7 +24,12 @@ const router = createRouter({
       children: [
         {
           path: '',
-          redirect: '/chat',
+          redirect: '/dashboard',
+        },
+        {
+          path: 'dashboard',
+          name: 'Dashboard',
+          component: () => import('@/pages/DashboardPage.vue'),
         },
         {
           path: 'chat',
@@ -66,7 +71,7 @@ const router = createRouter({
     // 404 fallback
     {
       path: '/:pathMatch(.*)*',
-      redirect: '/chat',
+      redirect: '/dashboard',
     },
   ],
 })
@@ -85,9 +90,9 @@ router.beforeEach((to, _from, next) => {
     return
   }
 
-  // Guest-only pages (login, register) — redirect to /chat if already authed
+  // Guest-only pages (login, register) — redirect to /dashboard if already authed
   if (to.meta.guest && authStore.isAuthenticated) {
-    next({ name: 'Chat' })
+    next({ name: 'Dashboard' })
     return
   }
 

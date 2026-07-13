@@ -9,7 +9,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, desc, func, select, update
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.core.config import settings
 from backend.core.database import get_postgres_session
@@ -215,7 +216,7 @@ async def update_conversation_title(
         )
         stats = stats_result.one()
 
-    logger.info("conversation_title_updated", conv_id=str(conv_id), title=title)
+    logger.info("conversation_title_updated", conv_id=str(conv_id), title_len=len(title))
     return _conversation_to_dict(
         conv,
         message_count=stats.message_count or 0,
@@ -381,7 +382,7 @@ async def auto_generate_title(conv_id: uuid.UUID, user_id: uuid.UUID, content: s
             logger.info(
                 "conversation_title_auto_generated",
                 conv_id=str(conv_id),
-                title=title,
+                title_len=len(title),
             )
 
 
@@ -406,7 +407,14 @@ async def add_conversation_tag(
         current = list(conv.tags or [])
         if tag not in current:
             current.append(tag)
-            conv.tags = current
+            # Use raw UPDATE to guarantee JSONB persistence regardless of
+            # SQLAlchemy change-detection quirks (flag_modified alone isn't enough
+            # for some JSONB configurations).
+            await session.execute(
+                update(Conversation)
+                .where(Conversation.id == conv_id)
+                .values(tags=current)
+            )
             await session.commit()
     return current
 
@@ -420,6 +428,10 @@ async def remove_conversation_tag(
         current = list(conv.tags or [])
         if tag in current:
             current.remove(tag)
-            conv.tags = current
+            await session.execute(
+                update(Conversation)
+                .where(Conversation.id == conv_id)
+                .values(tags=current)
+            )
             await session.commit()
     return current

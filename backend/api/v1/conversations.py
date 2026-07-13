@@ -33,7 +33,7 @@ from backend.schemas.conversation import (
     PlanActionRequest,
     SendMessageRequest,
 )
-from backend.services import chat_service, conversation_service
+from backend.services import chat_service, conversation_service, task_service
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,7 +75,7 @@ async def create_conversation(
     logger.info(
         "api_create_conversation",
         user_id=str(current_user.id),
-        title=body.title,
+        title_len=len(body.title or ""),
     )
     conv = await conversation_service.create_conversation(
         current_user.id, title=body.title, model=body.model,
@@ -120,7 +120,7 @@ async def update_conversation(
         "api_update_conversation",
         conv_id=str(conversation_id),
         user_id=str(current_user.id),
-        title=body.title,
+        title_len=len(body.title or ""),
     )
     try:
         conv = await conversation_service.update_conversation_title(
@@ -192,7 +192,7 @@ async def send_message(
         "api_send_message",
         conv_id=str(conversation_id),
         user_id=str(current_user.id),
-        preview=body.content[:80],
+        preview=f"<{len(body.content)} chars>",
     )
 
     async def event_stream():
@@ -313,6 +313,13 @@ async def clarity_response(
     current_user: User = Depends(get_current_active_user),
 ):
     """User replies to a clarifying question within the same research task."""
+    # T128: Verify task ownership before allowing cross-user mutation
+    try:
+        task_id_uuid = UUID(task_id)
+        await task_service.get_task(task_id_uuid, current_user.id)
+    except (ValueError, KeyError):
+        raise HTTPException(status_code=404, detail="任务不存在")
+
     logger.info(
         "api_clarify_response",
         task_id=task_id,

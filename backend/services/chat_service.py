@@ -606,6 +606,12 @@ async def _run_research(
 
     # ── Start graph from retriever (plan confirmed) ──
     yield _sse("plan_action", {"taskId": task_id_str, "action": "accept"})
+
+    # Transition task to running for dashboard stats (T120)
+    try:
+        await task_service.update_task_status(task.id, "running", user_id=user_id)
+    except Exception:
+        logger.warning("task_running_transition_failed", task_id=task_id_str, exc_info=True)
     graph_input = {
         "task_id": task_id_str,
         "user_id": str(user_id),
@@ -663,11 +669,22 @@ async def _run_research(
             )
             data["messageId"] = str(msg.id)
             yield _sse("gap_question", data)
+        # Graph finished normally — mark task as completed
+        try:
+            await task_service.update_task_status(task.id, "completed", user_id=user_id)
+        except Exception:
+            logger.warning("task_complete_transition_failed", task_id=task_id_str, exc_info=True)
         return
     except Exception:
         logger.error(
             "research_failed", conv_id=str(conversation_id), user_id=str(user_id), exc_info=True,
         )
+        # Mark task as failed on pipeline error
+        try:
+            await task_service.update_task_status(task.id, "failed", user_id=user_id,
+                                                  error_message="研究流程执行失败")
+        except Exception:
+            logger.warning("task_failed_transition_failed", task_id=task_id_str, exc_info=True)
         yield _sse("error", {"message": "研究流程执行失败", "taskId": task_id_str})
         return
 

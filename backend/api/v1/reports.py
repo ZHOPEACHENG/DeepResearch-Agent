@@ -11,6 +11,7 @@ from sqlalchemy import select
 from backend.api.deps import get_current_active_user
 from backend.core.database import get_mongo_db, get_postgres_session
 from backend.models.report import ResearchReport
+from backend.models.task import ResearchTask
 from backend.models.user import User
 from backend.services import report_service
 from backend.utils.logging import get_logger
@@ -37,8 +38,14 @@ async def get_citation_detail(
 
     session = get_postgres_session()
     async with session:
+        # Verify ownership via task.user_id (T128: security hardening)
         result = await session.execute(
-            select(ResearchReport).where(ResearchReport.id == rid)
+            select(ResearchReport)
+            .join(ResearchTask, ResearchReport.task_id == ResearchTask.id)
+            .where(
+                ResearchReport.id == rid,
+                ResearchTask.user_id == current_user.id,
+            )
         )
         report = result.scalar_one_or_none()
         if report is None:

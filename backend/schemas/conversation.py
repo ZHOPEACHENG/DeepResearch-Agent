@@ -31,6 +31,7 @@ class ConversationRead(BaseModel):
     id: UUID
     title: str
     model: str
+    tags: list[str] = Field(default_factory=list)
     message_count: int = 0
     last_message_preview: str | None = None
     created_at: datetime

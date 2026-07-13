@@ -11,9 +11,10 @@ to its TTL (default 30 min). Real-time revocation of access tokens requires a
 server-side deny-list (not yet implemented).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from backend.api.deps import get_current_user
+from backend.core.rate_limiter import login_limiter, register_limiter
 from backend.models.user import User
 from backend.schemas.user import (
     RefreshRequest,
@@ -28,6 +29,7 @@ from backend.services.auth_service import (
     refresh_access_token,
     register_user,
 )
+from backend.utils.log_mask import mask_email, mask_username
 from backend.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -41,7 +43,11 @@ router = APIRouter(prefix="/auth")
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user account",
 )
-async def register(req: UserRegisterRequest):
+async def register(
+    req: UserRegisterRequest,
+    request: Request,
+    _rate: None = Depends(register_limiter),
+):
     """
     Register a new account and return an access + refresh token pair.
 
@@ -58,8 +64,8 @@ async def register(req: UserRegisterRequest):
     except Exception:
         logger.error(
             "register_unexpected_error",
-            username=req.username,
-            email=str(req.email),
+            username=mask_username(req.username),
+            email=mask_email(str(req.email)),
             exc_info=True,
         )
         raise HTTPException(
@@ -75,7 +81,11 @@ async def register(req: UserRegisterRequest):
     status_code=status.HTTP_200_OK,
     summary="Authenticate and receive tokens",
 )
-async def login(req: UserLoginRequest):
+async def login(
+    req: UserLoginRequest,
+    request: Request,
+    _rate: None = Depends(login_limiter),
+):
     """
     Authenticate with email + password.
 
@@ -97,7 +107,7 @@ async def login(req: UserLoginRequest):
             headers={"WWW-Authenticate": "Bearer"},
         )
     except Exception:
-        logger.error("login_unexpected_error", email=str(req.email), exc_info=True)
+        logger.error("login_unexpected_error", email=mask_email(str(req.email)), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="登录失败，请稍后重试",
