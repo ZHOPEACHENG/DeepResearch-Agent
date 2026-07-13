@@ -20,6 +20,7 @@ from typing import Literal
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.core.config import settings
 from backend.core.database import get_postgres_session
@@ -153,6 +154,7 @@ async def _update_message_status_by_task(
         current = dict(msg.extra or {})
         current["status"] = status
         msg.extra = current
+        flag_modified(msg, "extra")  # force SQLAlchemy to detect JSONB change
         await session.commit()
 
 
