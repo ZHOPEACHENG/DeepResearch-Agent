@@ -102,6 +102,7 @@ export function sendMessageStream(
   parentMessageId: string | null,
   model: string | undefined,
   mode: ChatMode,
+  useKnowledge: boolean,
   onEvent: (event: SSEEvent) => void,
   onError: (error: Error) => void,
   onDone: () => void,
@@ -117,7 +118,9 @@ export function sendMessageStream(
       'Authorization': token ? `Bearer ${token}` : '',
       'Accept': 'text/event-stream',
     },
-    body: JSON.stringify({ content, parent_message_id: parentMessageId, model, mode }),
+    body: JSON.stringify({
+      content, parent_message_id: parentMessageId, model, mode, use_knowledge: useKnowledge,
+    }),
     signal: controller.signal,
   }).then(async (response) => {
     if (!response.ok) throw new Error(`请求失败 (HTTP ${response.status})`)

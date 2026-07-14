@@ -90,6 +90,7 @@ async def handle_message(
     parent_message_id: uuid.UUID | None = None,
     model: str | None = None,
     mode: Literal["chat", "research"] = "chat",
+    use_knowledge: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Entry point: save user message, dispatch to chat or research graph.
 
@@ -119,10 +120,10 @@ async def handle_message(
     config = {"configurable": {"thread_id": str(conversation_id)}}
 
     if mode == "chat":
-        async for event in _run_chat(conversation_id, user_id, content, user_msg.id, config, model, mode):
+        async for event in _run_chat(conversation_id, user_id, content, user_msg.id, config, model, mode, use_knowledge):
             yield event
     else:
-        async for event in _run_research(conversation_id, user_id, content, user_msg.id, config, model, mode):
+        async for event in _run_research(conversation_id, user_id, content, user_msg.id, config, model, mode, use_knowledge):
             yield event
 
     yield _sse("done", {"conversationId": str(conversation_id), "model": model})
@@ -139,7 +140,10 @@ async def _update_message_status_by_task(
             select(Message.id)
             .where(
                 Message.message_type == message_type,
-                Message.extra["taskId"].as_string() == str(task_id),
+                # Metadata uses snake_case "task_id" (not camelCase).
+                # Coerce both: JSONB ->> 'task_id' OR ->> 'taskId'.
+                (Message.extra["task_id"].as_string() == str(task_id)) |
+                (Message.extra["taskId"].as_string() == str(task_id)),
             )
             .order_by(Message.created_at.desc())
             .limit(1),
@@ -264,10 +268,72 @@ async def _run_chat(
     config: dict,
     model: str | None,
     mode: Literal["chat", "research"],
+    use_knowledge: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Stream an LLM reply using the chat graph. History is loaded from the DB
     so the model has full context — including research cards — from prior turns."""
     graph = get_chat_graph()
+
+    # ── RAG: inject knowledge-base context into the user message ──
+    effective_content = content
+    kb_sources: list[dict] = []  # stored in message metadata for citation display
+    if use_knowledge:
+        try:
+            from backend.services import knowledge_service
+            kb_results = await knowledge_service.search_knowledge(
+                user_id, content, page=1, page_size=5,
+            )
+            if kb_results.results:
+                # Filter by RRF score threshold — skip noise that BM25/vector
+                # ranked low (RRF K=60 → top-5 from one list ≈ 0.0154).
+                _KB_MIN_SCORE = 0.015
+                total = len(kb_results.results)
+                relevant = [r for r in kb_results.results
+                            if r.text and (r.score or 0) >= _KB_MIN_SCORE]
+                passed = len(relevant)
+                if not relevant:
+                    relevant = kb_results.results[:3]  # fallback: keep top-3
+                    logger.info(
+                        "chat_rag_all_below_threshold",
+                        conv_id=str(conversation_id),
+                        total_results=total,
+                        threshold=_KB_MIN_SCORE,
+                        fallback_count=len(relevant),
+                    )
+                elif passed < total:
+                    logger.info(
+                        "chat_rag_score_filter",
+                        conv_id=str(conversation_id),
+                        passed=passed,
+                        dropped=total - passed,
+                        threshold=_KB_MIN_SCORE,
+                    )
+                chunks = [r.text for r in relevant]
+                kb_sources = [
+                    {"filename": r.filename, "excerpt": r.text[:300], "chunkIndex": r.chunk_index}
+                    for r in relevant
+                ]
+                if chunks:
+                    kb_context = "\n\n---\n\n".join(chunks)
+                    effective_content = (
+                        f"以下是从用户知识库检索到的相关内容，请优先基于这些内容回答问题。"
+                        f"如果知识库内容不足以回答，可以结合你自己的知识补充。\n\n"
+                        f"=== 知识库内容 ===\n{kb_context}\n=== 知识库内容结束 ===\n\n"
+                        f"用户问题：{content}"
+                    )
+                    logger.info(
+                        "chat_rag_injected",
+                        conv_id=str(conversation_id),
+                        kb_chunks=len(chunks),
+                        kb_chars=len(kb_context),
+                        kb_sources_count=len(kb_sources),
+                    )
+        except Exception:
+            logger.warning(
+                "chat_rag_search_failed",
+                conv_id=str(conversation_id),
+                exc_info=True,
+            )
 
     # Load existing messages so the model sees the full conversation,
     # not just the latest user message.  Research results are saved as
@@ -339,12 +405,13 @@ async def _run_chat(
         prior = kept
 
     # The new user message goes last; add_messages prevents duplication.
-    graph_input = {"messages": prior + [{"role": "user", "content": content}]}
+    graph_input = {"messages": prior + [{"role": "user", "content": effective_content}]}
     logger.info(
         "chat_context_loaded",
         conv_id=str(conversation_id),
         prior_messages=len(prior),
         total_chars=sum(len(m["content"]) for m in graph_input["messages"]),
+        use_knowledge=use_knowledge,
     )
     full_reply = ""
 
@@ -373,7 +440,7 @@ async def _run_chat(
             message_type="text",
             parent_message_id=user_message_id,
             model=model,
-            metadata={"mode": mode},
+            metadata={"mode": mode, "kb_sources": kb_sources} if kb_sources else {"mode": mode},
         )
 
 
@@ -388,11 +455,59 @@ async def _run_research(
     config: dict,
     model: str | None,
     mode: Literal["chat", "research"],
+    use_knowledge: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Run the full research pipeline via the research graph."""
-    # Create task
+    # ── RAG: inject knowledge-base context ──
+    kb_context = ""
+    kb_sources: list[dict] = []
+    if use_knowledge:
+        try:
+            from backend.services import knowledge_service
+            kb_results = await knowledge_service.search_knowledge(
+                user_id, content, page=1, page_size=5,
+            )
+            if kb_results.results:
+                _KB_MIN_SCORE = 0.015
+                total = len(kb_results.results)
+                relevant = [r for r in kb_results.results
+                            if r.text and (r.score or 0) >= _KB_MIN_SCORE]
+                if not relevant:
+                    relevant = kb_results.results[:3]
+                    logger.info(
+                        "research_rag_all_below_threshold",
+                        conv_id=str(conversation_id),
+                        total_results=total,
+                        threshold=_KB_MIN_SCORE,
+                        fallback_count=len(relevant),
+                    )
+                chunks = [r.text for r in relevant]
+                kb_sources = [
+                    {"filename": r.filename, "excerpt": r.text[:300], "chunkIndex": r.chunk_index}
+                    for r in relevant
+                ]
+                if chunks:
+                    kb_context = "\n\n---\n\n".join(chunks)
+                    logger.info(
+                        "research_rag_injected",
+                        conv_id=str(conversation_id),
+                        kb_chunks=len(chunks),
+                        kb_chars=len(kb_context),
+                        kb_sources_count=len(kb_sources),
+                    )
+        except Exception:
+            logger.warning(
+                "research_rag_search_failed",
+                conv_id=str(conversation_id),
+                exc_info=True,
+            )
+
+    # Create task — include KB context hint if RAG is enabled
+    task_topic = content
+    if kb_context:
+        task_topic = f"{content}\n\n[用户知识库相关内容]\n{kb_context[:2000]}"
     try:
-        task = await task_service.create_task(user_id, content)
+        task = await task_service.create_task(user_id, task_topic)
     except ValueError as e:
         yield _sse("error", {"message": str(e), "taskId": ""})
         return
@@ -402,17 +517,18 @@ async def _run_research(
     # 主题不够清晰时，暂停并等待用户在对话框里回复细化内容，
     # 收到回复后重新检查，最多重试 2 轮。
     # 第 3 次检查无论结果如何都直接通过，防止无限循环。
-    topic = content
+    original_topic = content
+    clarifications: list[str] = []
+    topic = task_topic
     for clarity_round in range(3):
         try:
             clarity = await planner.check_clarity(topic)
         except Exception:
             logger.warning("clarity_check_failed", exc_info=True)
-            clarity = {"is_clear": True}  # 检查失败就跳过澄清，直接执行
+            clarity = {"is_clear": True}
         if clarity.get("is_clear"):
-            break  # 主题已清晰，进入计划生成
+            break
         if clarity_round >= 2:
-            # 最后一轮，即使模型认为不清晰也强制通过
             logger.info(
                 "clarity_max_rounds_reached",
                 task_id=task_id_str,
@@ -421,8 +537,6 @@ async def _run_research(
             break
 
         question_text = clarity.get("clarifying_question", "") or "请进一步描述您的研究主题"
-
-        # 组合模型的完整分析：先总结它理解的，再列出模糊点，最后提问
         understood = clarity.get("understood", "")
         unclear = clarity.get("unclear_aspects", []) or []
         parts = [question_text]
@@ -439,7 +553,7 @@ async def _run_research(
                 await conversation_service.save_message(
                     conversation_id=conversation_id,
                     role="user",
-                    content=topic,
+                    content=clarifications[-1] if clarifications else topic,
                     message_type="text",
                     model=model,
                     metadata={"mode": mode, "task_id": task_id_str},
@@ -461,7 +575,6 @@ async def _run_research(
             "taskId": task_id_str,
         })
 
-        # ── 暂停 SSE 流，等用户在对话框里回复 ──
         clarify_waiter = asyncio.Event()
         _clarify_events[task_id_str] = clarify_waiter
         try:
@@ -481,12 +594,27 @@ async def _run_research(
                 "taskId": task_id_str,
             })
             return
-        # Accumulate clarifications so the model sees the full context
-        topic = f"{topic} —— {clarification}"
+        clarifications.append(clarification)
+        # Build topic for next clarity check — combine original + all clarifications
+        if clarifications:
+            topic = original_topic + "\n\n用户补充说明：\n" + "\n".join(
+                f"{i}. {c}" for i, c in enumerate(clarifications, 1)
+            )
+
+    # ── Build final topic for planner: topic + KB context + clarifications ──
+    parts = [f"研究主题：{original_topic}"]
+    if kb_context:
+        parts.append(f"\n[知识库相关内容]\n{kb_context[:2000]}")
+    if clarifications:
+        parts.append(
+            "\n用户补充说明（请务必基于这些内容细化研究计划，不要忽略）：\n"
+            + "\n".join(f"{i}. {c}" for i, c in enumerate(clarifications, 1))
+        )
+    plan_topic = "\n\n".join(parts) if len(parts) > 1 else parts[0]
 
     # ── Generate plan (outside graph — decision 1) ──
     plan_state = {
-        "topic": topic, "task_id": task_id_str,
+        "topic": plan_topic, "task_id": task_id_str,
         "user_id": str(user_id), "conversation_id": str(conversation_id),
     }
     try:
@@ -614,6 +742,30 @@ async def _run_research(
         await task_service.update_task_status(task.id, "running", user_id=user_id)
     except Exception:
         logger.warning("task_running_transition_failed", task_id=task_id_str, exc_info=True)
+    # ── Build initial retrieval results from KB (if RAG enabled) ──
+    # Convert KB sources to the same shape as regular retrieval results so
+    # they flow through analyzer → writer and appear as citations.
+    kb_retrieval_results: list[dict] = []
+    if kb_sources:
+        for i, src in enumerate(kb_sources):
+            kb_retrieval_results.append({
+                "result_id": f"kb_{task_id_str}_{i}",
+                "title": src.get("filename", "知识库文档"),
+                "source_type": "knowledge_base",
+                "abstract": src.get("excerpt", ""),
+                "excerpt": src.get("excerpt", ""),
+                "credibility": "high",
+                "url": "",
+            })
+
+    if kb_retrieval_results:
+        logger.info(
+            "research_kb_passed_to_graph",
+            conv_id=str(conversation_id),
+            kb_count=len(kb_retrieval_results),
+            kb_titles=[r["title"] for r in kb_retrieval_results],
+        )
+
     graph_input = {
         "task_id": task_id_str,
         "user_id": str(user_id),
@@ -622,6 +774,7 @@ async def _run_research(
         "user_focus_notes": plan_state.get("user_focus_notes", ""),
         "analysis_round": 1,
         "all_retrieval_results": [],
+        "kb_retrieval_results": kb_retrieval_results,
     }
     # Emit first phase label BEFORE graph execution so the frontend shows
     # "正在检索..." while the retriever is actually running (not after).

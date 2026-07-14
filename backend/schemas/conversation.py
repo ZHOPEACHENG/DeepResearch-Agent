@@ -66,6 +66,7 @@ class SendMessageRequest(BaseModel):
     model: str | None = None
     mode: Literal["chat", "research"] = "chat"
     deep_thinking: bool = False
+    use_knowledge: bool = False
 
 
 class PlanActionRequest(BaseModel):

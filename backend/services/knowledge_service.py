@@ -422,13 +422,16 @@ def _parse_hits(resp: dict) -> list[dict]:
 
 def _hit_to_result(hit: dict) -> SearchResultItem:
     meta = hit.get("metadata") or {}
+    # Use RRF fusion score when available (cross-method consensus);
+    # fall back to raw ES _score for single-method queries.
+    score = hit.get("_rrf_score") if "_rrf_score" in hit else hit.get("_score")
     return SearchResultItem(
         document_id=hit.get("document_id", ""),
         filename=meta.get("source_file", ""),
         chunk_index=hit.get("chunk_index", 0),
         text=hit.get("text", ""),
         page_number=hit.get("page_number"),
-        score=hit.get("_score"),
+        score=score,
         highlights=[],
     )
 

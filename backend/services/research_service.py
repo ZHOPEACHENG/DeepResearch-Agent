@@ -84,6 +84,7 @@ class ResearchState(MessagesState):
     gap_queries: list[str]
     retrieval_results: list[dict]
     all_retrieval_results: list[dict]
+    kb_retrieval_results: list[dict]  # injected from RAG; survives all nodes
     knowledge_summary: dict | None
     knowledge_gaps: list[dict]
     _gap_action: str       # "answer" | "skip"
@@ -127,12 +128,16 @@ async def _retriever_node(state: ResearchState) -> dict[str, Any]:
 
 async def _analyzer_node(state: ResearchState) -> dict[str, Any]:
     """Integrate sources, detect knowledge gaps."""
+    # Merge KB-injected results so they are analysed and cited alongside
+    # the regular web/arxiv search results.
+    all_results = list(state.get("all_retrieval_results", []))
+    all_results.extend(state.get("kb_retrieval_results", []))
     agent_state: dict[str, Any] = {
         "task_id": state.get("task_id"),
         "conversation_id": state.get("conversation_id"),
         "user_id": state.get("user_id"),
         "research_plan": state.get("research_plan"),
-        "all_retrieval_results": state.get("all_retrieval_results", []),
+        "all_retrieval_results": all_results,
         "analysis_round": state.get("analysis_round", 1),
     }
     result = await _analyzer.run(agent_state)
@@ -182,12 +187,23 @@ async def _synthesizer_node(state: ResearchState) -> dict[str, Any]:
 
 async def _writer_node(state: ResearchState) -> dict[str, Any]:
     """Generate cited report, persist to PostgreSQL."""
+    # Merge KB-injected results into the citation list.
+    all_results = list(state.get("all_retrieval_results", []))
+    kb_results = state.get("kb_retrieval_results") or []
+    all_results.extend(kb_results)
+    logger.info(
+        "writer_merging_kb_results",
+        task_id=str(state.get("task_id")),
+        web_results=len(state.get("all_retrieval_results", [])),
+        kb_results=len(kb_results),
+        total=len(all_results),
+    )
     agent_state: dict[str, Any] = {
         "task_id": state.get("task_id"),
         "conversation_id": state.get("conversation_id"),
         "research_plan": state.get("research_plan"),
         "synthesized_knowledge": state.get("synthesized_knowledge"),
-        "all_retrieval_results": state.get("all_retrieval_results", []),
+        "all_retrieval_results": all_results,
         "user_focus_notes": state.get("user_focus_notes", ""),
     }
     result = await _writer.run(agent_state)

@@ -34,6 +34,9 @@ export const useConversationStore = defineStore('conversations', () => {
   // User-selected Deep Research toggle: 'chat' (default) or 'research'.
   // Persists across sends until the user changes it — no auto-reset.
   const mode = ref<ChatMode>('chat')
+  // Knowledge-base RAG toggle: when on, chat & research modes both retrieve
+  // relevant chunks from the user's knowledge base before generating a reply.
+  const useKnowledge = ref(false)
   // Current research phase label shown while the pipeline runs
   // (e.g. "正在检索资料"). Empty when not in a research phase.
   const phaseLabel = ref('')
@@ -137,7 +140,7 @@ export const useConversationStore = defineStore('conversations', () => {
     let userMessageId: string | null = null
 
     _abortController = convApi.sendMessageStream(
-      convId, content, parentMessageId ?? null, selectedModel.value, mode.value,
+      convId, content, parentMessageId ?? null, selectedModel.value, mode.value, useKnowledge.value,
       (event: SSEEvent) => {
         // If this stream was detached (user navigated away) or another
         // conversation's stream is now active, silently drop events.
@@ -509,7 +512,7 @@ export const useConversationStore = defineStore('conversations', () => {
     conversations, currentConversation, messages, loading, error,
     isStreaming, streamingContent, selectedModel,
     availableModels, total, page,
-    mode, phaseLabel,
+    mode, useKnowledge, phaseLabel,
     hasConversations,
     clearError, clearAll, fetchConversations, createConversation, fetchConversation,
     sendMessage, stopStreaming, clearCurrentConversation,

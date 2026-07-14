@@ -35,6 +35,12 @@ watch(() => route.params.conversationId, async (newId) => {
   if (id && id !== convId.value) {
     convId.value = id
     await store.fetchConversation(id)
+    // If the conversation doesn't exist (404), redirect away
+    if (store.error) {
+      router.replace('/chat')
+      store.clearError()
+      return
+    }
     // If this conversation had an active research stream that was
     // detached (user navigated away mid-pipeline), poll for new
     // results so the UI catches up without a manual refresh.
@@ -385,6 +391,21 @@ watch(() => store.messages.length, scrollToBottom)
           </el-avatar>
           <div class="msg-bubble-wrapper">
             <div class="msg-bubble ai-bubble markdown-body" v-if="msg.messageType === 'text'" v-html="renderMarkdown(String(msg.content))"></div>
+            <!-- Knowledge-base source references -->
+            <div v-if="msg.messageType === 'text' && Array.isArray(msg.metadata?.kb_sources) && (msg.metadata?.kb_sources as any[]).length" class="kb-refs">
+              <el-collapse>
+                <el-collapse-item :title="`📚 参考知识库（${(msg.metadata?.kb_sources as any[]).length} 个片段）`">
+                  <div v-for="(src, i) in (msg.metadata?.kb_sources as any[])" :key="i" class="kb-ref-item">
+                    <div class="kb-ref-header">
+                      <span class="kb-ref-index">[{{ i + 1 }}]</span>
+                      <span class="kb-ref-file">{{ src.filename }}</span>
+                      <span v-if="src.chunkIndex !== undefined" class="kb-ref-chunk">片段 #{{ src.chunkIndex }}</span>
+                    </div>
+                    <div class="kb-ref-excerpt">{{ (src.excerpt || '').slice(0, 300) }}{{ (src.excerpt || '').length > 300 ? '...' : '' }}</div>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+            </div>
             <!-- Plan card -->
             <div class="msg-card plan" v-else-if="msg.messageType === 'plan_card'">
               <h4>研究计划</h4>
@@ -683,6 +704,14 @@ watch(() => store.messages.length, scrollToBottom)
           active-text="深度研究"
           inactive-text="对话"
         />
+        <el-switch
+          v-model="store.useKnowledge"
+          size="small"
+          :disabled="store.isStreaming"
+          inline-prompt
+          active-text="知识库"
+          inactive-text="知识库"
+        />
       </div>
       <div class="chat-input">
         <el-input
@@ -876,7 +905,39 @@ watch(() => store.messages.length, scrollToBottom)
 
 /* ── Message Bubble ───────────────────────────────────────────────── */
 .msg-bubble-wrapper {
-  display: contents; /* transparent to flex — bubble becomes direct flex child */
+  display: contents;
+}
+
+/* ── Knowledge-base refs ─────────────────────────────────────────── */
+.kb-refs {
+  max-width: min(80%, 720px);
+  margin-top: 0;
+}
+.kb-refs :deep(.el-collapse-item__header) {
+  font-size: 12px;
+  color: #67c23a;
+  height: auto;
+  padding: 6px 0;
+}
+.kb-ref-item {
+  font-size: 12px;
+  padding: 6px 0;
+  border-bottom: 1px dashed #ebeef5;
+}
+.kb-ref-item:last-child { border-bottom: none; }
+.kb-ref-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.kb-ref-index { font-weight: 600; color: #67c23a; }
+.kb-ref-file { font-weight: 500; color: #606266; }
+.kb-ref-chunk { color: #c0c4cc; font-size: 11px; }
+.kb-ref-excerpt {
+  color: #909399;
+  line-height: 1.5;
+  margin-top: 2px;
 }
 .msg-bubble {
   padding: 10px 14px;

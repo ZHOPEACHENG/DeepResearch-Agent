@@ -203,6 +203,7 @@ async def send_message(
                 parent_message_id=body.parent_message_id,
                 model=body.model,
                 mode=body.mode,
+                use_knowledge=body.use_knowledge,
             ):
                 event_name = sse_event["event"]
                 data_json = json.dumps(sse_event["data"], ensure_ascii=False)
