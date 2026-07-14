@@ -7,10 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 COPY backend/ backend/
 
 RUN pip install --no-cache-dir -e .
+
+# Create upload directory for knowledge-base documents
+RUN mkdir -p /app/uploads
 
 EXPOSE 8000
 

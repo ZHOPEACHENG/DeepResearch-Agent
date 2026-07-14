@@ -1,8 +1,5 @@
 # Quickstart: 深度研究平台
 
-**Date**: 2026-06-04
-**Branch**: `001-deep-research-platform`
-
 ## 前置要求
 
 | 软件 | 最低版本 | 用途 |
@@ -18,7 +15,6 @@
 ```bash
 git clone <repository-url>
 cd DeepResearch-Agent
-git checkout 001-deep-research-platform
 ```
 
 ### 2. 配置环境变量
@@ -27,23 +23,25 @@ git checkout 001-deep-research-platform
 cp .env.example .env
 ```
 
-编辑 `.env` 文件，填写必要配置：
+编辑 `.env` 文件，**至少填写以下必填项**：
 
 ```ini
-# LLM API 配置（必填）
-LLM_API_KEY=your-api-key-here
-LLM_API_BASE=https://api.openai.com/v1
-LLM_MODEL=gpt-4o
-LLM_EMBED_MODEL=text-embedding-3-small
-CHAT_MODEL=gpt-4o
-MAX_CONTEXT_TOKENS=128000
+# LLM API 密钥（至少填一个）
+DEEPSEEK_API_KEY=sk-your-deepseek-key
+# OPENAI_API_KEY=sk-your-openai-key
 
-# 搜索 API 配置（必填）
-SEARCH_API_KEY=your-search-api-key
+# LLM API 地址（可选，留空用官方地址）
+# DeepSeek 直连: https://api.deepseek.com/v1
+# DashScope 代理: https://dashscope.aliyuncs.com/compatible-mode/v1
+BASE_URL=
 
-# 数据库密码（可选修改）
-POSTGRES_PASSWORD=research_dev
-MONGO_ROOT_PASSWORD=research_dev
+# Embedding API（如与 LLM 共用则留空）
+# EMBEDDING_BASE_URL=
+# EMBEDDING_API_KEY=
+
+# 搜索 API（必填）
+SEARCH_API_KEY=tvly-your-tavily-key
+SEARCH_PROVIDER=tavily
 
 # JWT 密钥（生产环境务必修改）
 JWT_SECRET_KEY=change-me-in-production
@@ -55,10 +53,10 @@ JWT_SECRET_KEY=change-me-in-production
 docker compose -f docker/docker-compose.yml up -d
 ```
 
-首次启动会自动执行：
+首次启动会自动：
 - 拉取基础镜像并构建应用镜像
 - 初始化 PostgreSQL 数据库表结构
-- 创建 Elasticsearch 索引
+- 创建 Elasticsearch 索引（含 IK 中文分词）
 - 启动所有服务
 
 ### 4. 验证启动
@@ -67,28 +65,28 @@ docker compose -f docker/docker-compose.yml up -d
 # 检查服务健康状态
 docker compose -f docker/docker-compose.yml ps
 
-# 后端 API 健康检查
-curl http://localhost:8000/api/v1/health
+# 后端健康检查
+curl http://localhost:8000/health
 
-# 前端页面
-# 浏览器打开 http://localhost:3000
+# 前端页面 → 浏览器打开 http://localhost:3000
 ```
 
 预期输出：
 ```
-backend-1      Up 30s    healthy    0.0.0.0:8000->8000/tcp
-frontend-1     Up 30s    healthy    0.0.0.0:3000->3000/tcp
-postgres-1     Up 30s    healthy    0.0.0.0:5432->5432/tcp
-mongodb-1      Up 30s    healthy    0.0.0.0:27017->27017/tcp
-elasticsearch-1 Up 30s   healthy    0.0.0.0:9200->9200/tcp
+NAME                       STATUS
+deepresearch-postgres      Up (healthy)
+deepresearch-mongodb       Up (healthy)
+deepresearch-elasticsearch Up (healthy)
+deepresearch-backend       Up
+deepresearch-frontend      Up
 ```
 
 ## 服务端口
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
-| Frontend | 3000 | Vue 3 开发服务器 |
-| Backend API | 8000 | FastAPI 服务 + Swagger UI (`/docs`) |
+| Frontend | 3000 | Vue 3 前端（Nginx） |
+| Backend API | 8000 | FastAPI + Swagger UI (`/docs`) |
 | PostgreSQL | 5432 | 业务数据库 |
 | MongoDB | 27017 | 研究过程数据 |
 | Elasticsearch | 9200 | 全文检索引擎 |
@@ -97,49 +95,54 @@ elasticsearch-1 Up 30s   healthy    0.0.0.0:9200->9200/tcp
 
 ### 1. 注册账号
 
-打开 http://localhost:3000 ，点击"注册"并填写信息。
+打开 http://localhost:3000 → 注册，填写信息。
 
 或通过 API：
 ```bash
 curl -X POST http://localhost:8000/api/v1/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"username": "researcher", "email": "researcher@example.com", "password": "secure_password_123"}'
+  -d '{"username": "researcher", "email": "researcher@example.com", "password": "securePassword1"}'
 ```
 
-### 2. 开始对话
+### 2. 仪表盘
 
-打开 http://localhost:3000/chat，在输入框中自由输入文字。发送消息后，系统自动创建会话。
+登录后进入仪表盘，查看总对话数、已生成报告、知识库文档统计。
+
+### 3. 开始对话
+
+打开 http://localhost:3000/chat，输入框中自由输入文字。
+
+使用开关：
+- **知识库**：开启后，对话和研究都会从个人知识库检索相关内容辅助回答
+- **深度研究**：开启后，系统生成研究计划 → 检索 → 分析 → 生成含引用的研究报告
 
 或通过 API：
 
 ```bash
-# 创建新会话
+# 创建对话
 curl -X POST http://localhost:8000/api/v1/conversations \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json"
 
-# 发送消息（SSE 流式响应）
-curl -N http://localhost:8000/api/v1/conversations/<conversation_id>/messages \
+# 发送消息（SSE 流式，开启知识库 + 深度研究）
+curl -N http://localhost:8000/api/v1/conversations/<conv_id>/messages \
   -H "Authorization: Bearer <access_token>" \
   -H "Content-Type: application/json" \
-  -d '{"content": "大语言模型在医学诊断中的应用"}'
+  -d '{"content":"固态电池量产技术路线对比","mode":"research","use_knowledge":true}'
 ```
 
-### 3. 发起深度研究
+### 4. 研究报告导出
 
-在对话输入框旁打开"深度研究"开关，再发送研究主题，系统生成研究计划卡片。点击"接受"后，研究流水线启动。
+报告卡片上点击「导出 Markdown」或「导出 PDF」即可下载。
 
-### 4. 监控研究进度
+### 5. 知识库管理
 
-在对话界面中查看实时进度（研究卡片逐步渲染），或通过 API 发送消息获取 SSE 流式响应。
-
-### 5. 查看研究报告
-
-研究完成后，在报告页查看完整报告及引用追溯。
-
-### 6. 上传知识库文档
+- 上传 PDF/DOCX/TXT/MD 到知识库（右上角菜单 → 知识库管理）
+- 文档自动完成文本提取、分块、向量化、ES 索引
+- 支持混合检索（BM25 + 向量）和自然语言问答
 
 ```bash
+# API 上传
 curl -X POST http://localhost:8000/api/v1/knowledge/documents \
   -H "Authorization: Bearer <access_token>" \
   -F "file=@/path/to/paper.pdf"
@@ -150,19 +153,14 @@ curl -X POST http://localhost:8000/api/v1/knowledge/documents \
 ### 后端开发
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# 安装依赖
 pip install -e ".[dev]"
 
-# 启动依赖服务（仅数据库）
+# 启动依赖服务
 docker compose -f docker/docker-compose.yml up -d postgres mongodb elasticsearch
 
-# 启动开发服务器
-uvicorn main:app --reload --port 8000
-
-# 运行测试
-pytest tests/ -v
+# 启动开发服务器（仓库根目录）
+uvicorn backend.main:app --reload --port 8000
 ```
 
 ### 前端开发
@@ -170,47 +168,43 @@ pytest tests/ -v
 ```bash
 cd frontend
 npm install
-
-# 启动开发服务器
-npm run dev
-
-# 运行测试
-npm run test
+npm run dev       # :3000，/api 代理到 :8000
 ```
 
 ## 停止服务
 
 ```bash
-# 停止所有服务
-docker compose -f docker/docker-compose.yml down
-
-# 停止并清除数据卷（谨慎！）
-docker compose -f docker/docker-compose.yml down -v
+docker compose -f docker/docker-compose.yml down           # 停止
+docker compose -f docker/docker-compose.yml down -v        # 停止 + 清除数据卷
 ```
 
 ## 常见问题
 
-**Q: Elasticsearch 启动失败，提示 `max virtual memory areas vm.max_map_count [65530] is too low`**
+**Q: Elasticsearch 启动失败，`max virtual memory areas vm.max_map_count too low`**
 
 ```bash
-# Linux 宿主机执行
+# Linux 宿主机
 sudo sysctl -w vm.max_map_count=262144
-
-# 永久生效
 echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
 ```
 
 **Q: 研究计划生成后流水线不继续**
 
 检查：
-1. `.env` 中的 `LLM_API_KEY` 是否已配置
-2. 外部 API 是否可访问（网络连接）
+1. `.env` 中 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 是否已配置
+2. `BASE_URL` 是否正确（DeepSeek 直连留空）
 3. 查看后端日志：`docker compose -f docker/docker-compose.yml logs backend`
+
+**Q: 知识库搜索/问答无结果**
+
+检查：
+1. Elasticsearch 是否正常运行
+2. 是否已上传文档且处理状态为"已完成"
+3. IK 分词插件是否安装成功
 
 **Q: 文档上传后一直显示 processing**
 
 检查：
-1. 文件格式是否在支持列表中（PDF/DOCX/TXT/MD）
+1. 文件格式是否支持（PDF/DOCX/TXT/MD）
 2. PDF 是否受密码保护
-3. 文件大小是否超过 50MB
-4. 查看后端日志获取详细错误信息
+3. 文件大小是否超过 50MB（`MAX_UPLOAD_SIZE_MB`）

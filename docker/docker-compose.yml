@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -13,7 +11,6 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../backend/db/postgresql:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepresearch} -d ${POSTGRES_DB:-deepresearch}"]
       interval: 10s
@@ -32,7 +29,6 @@ services:
       - "${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo_data:/data/db
-      - ../backend/db/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -71,18 +67,46 @@ services:
     container_name: deepresearch-backend
     restart: unless-stopped
     environment:
-      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-deepresearch}:${POSTGRES_PASSWORD:-research_dev}@postgres:5432/${POSTGRES_DB:-deepresearch}
-      - MONGO_URL=mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASSWORD:-research_dev}@mongodb:27017/${MONGO_DB:-deepresearch}?authSource=admin
-      - ES_URL=http://elasticsearch:9200
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_API_BASE=${LLM_API_BASE:-https://api.openai.com/v1}
+      # ── Database hosts (use Docker service names, not localhost) ──
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-deepresearch}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-research_dev}
+      - POSTGRES_DB=${POSTGRES_DB:-deepresearch}
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_ROOT_USER=${MONGO_ROOT_USER:-admin}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-research_dev}
+      - MONGO_DB=${MONGO_DB:-deepresearch}
+      - ES_HOST=elasticsearch
+      - ES_PORT=9200
+      # ── LLM ──
       - LLM_MODEL=${LLM_MODEL:-gpt-4o}
-      - LLM_EMBED_MODEL=${LLM_EMBED_MODEL:-text-embedding-3-small}
+      - LLM_EMBED_MODEL=${LLM_EMBED_MODEL:-text-embedding-v4}
       - CHAT_MODEL=${CHAT_MODEL:-gpt-4o}
-      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-128000}
-      - SEARCH_API_KEY=${SEARCH_API_KEY}
+      - SUMMARIZATION_MODEL=${SUMMARIZATION_MODEL:-gpt-4o-mini}
+      - BASE_URL=${BASE_URL:-}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - AVAILABLE_MODELS=${AVAILABLE_MODELS:-["gpt-4o","gpt-4o-mini"]}
+      # ── API keys (standard env vars consumed by langchain/httpx) ──
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # ── Search ──
+      - SEARCH_PROVIDER=${SEARCH_PROVIDER:-tavily}
+      - SEARCH_API_KEY=${SEARCH_API_KEY:-}
+      # ── JWT ──
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      # ── Application ──
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - BACKEND_PORT=8000
+      - MAX_TASK_EXECUTION_SECONDS=${MAX_TASK_EXECUTION_SECONDS:-7200}
+      - MAX_CONCURRENT_TASKS_PER_USER=${MAX_CONCURRENT_TASKS_PER_USER:-3}
+      - UPLOAD_DIR=${UPLOAD_DIR:-./uploads}
+      - MAX_UPLOAD_SIZE_MB=${MAX_UPLOAD_SIZE_MB:-50}
+      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:3000"]}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -92,9 +116,6 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-    volumes:
-      - ./backend:/app/backend
-      - ./reports:/app/reports
 
   frontend:
     build:
